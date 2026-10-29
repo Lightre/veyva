@@ -92,3 +92,10 @@ Five isolated audio alignment/silence-policy tests and integrated Clippy passed.
 The native layout now uses horizontal navigation, separate recording/replay controls, a right inspector and a custom titlebar. Dark/light palettes and immediate appearance persistence were added without capture engine changes. Seven isolated settings tests passed, including old-file migration, both theme roundtrips, invalid/duplicate theme rejection, atomic updates and save/replace behavior. Incremental offline compilation and Clippy with warnings denied passed.
 
 Both editable Figma theme frames were visually inspected. No release build, GUI launch, recording or native screenshot comparison was performed for this change. Windows snap, custom resize handles, DPI scaling, safe close while saving, theme persistence across restart, and the rendered layout remain manual checks. Prior capture/audio evidence is unchanged.
+
+
+## Editable preferences and cursor capture
+
+Inspector and Preferences share a draft with Apply/Discard. Replay changes use asynchronous stop/restart; recording, finalization, export and pending commands guard application. Scrollbars reserve layout space. Cursor capture is persisted (default on for older files), connected to both capture paths and composed before scaling using DXGI pointer metadata.
+
+Incremental offline check and all-targets Clippy with warnings denied passed. The isolated cursor-setting compatibility test passed. Four cursor shape/clipping/blending unit tests compile but were not executed: dependency test compilation was stopped to respect the requested build budget. No release build, live GUI/capture test or overhead benchmark was performed. Embedded DXGI pointers cannot be removed by disabling separate pointer composition; cursor-region readback may introduce GPU synchronization cost.

@@ -22,3 +22,13 @@ Build with `cargo build --release --offline`, then run `target\release\veyva.exe
 6. Start recording, pause/resume, finish/save and save a replay. Check states and errors remain visible in both themes. Closing during recording must finalize safely before the window exits.
 
 These are pending runtime checks; compile success is not playback or visual acceptance.
+
+
+## Editable capture preferences and cursor
+
+- Change resolution/FPS/audio in the inspector while replay is armed, then Apply. Verify a single restart, history reset and resumed buffering. Discard must restore the applied values in both views.
+- During recording, pause, finalization and replay export, verify Apply cannot interrupt the operation. Close during a pending apply and confirm no replacement session starts.
+- Test invalid/custom dimensions, failed encoder negotiation and retry using a supported preset. Errors must remain visible.
+- Record and save replay with Capture cursor enabled and disabled. Check moving pointer, text caret pointer shape, display edges and scaled output. DXGI may already embed a pointer in its desktop image; disabling separate-pointer composition cannot remove an embedded pointer.
+- Check scrollbar clearance in both themes at minimum size and 125%/150% DPI.
+- Compare capture overhead with cursor on/off on the same workload. Cursor composition adds a GPU desktop copy and a small cursor-region readback/upload; its overhead has not been measured.
