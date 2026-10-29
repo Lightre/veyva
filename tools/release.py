@@ -84,6 +84,15 @@ def imported_dlls(path):
     return sorted(set(names), key=str.lower)
 
 
+def validate_desktop_subsystem(path):
+    data = Path(path).read_bytes()
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    # imported_dlls validates the x64 PE headers before packaging reaches here.
+    subsystem = struct.unpack_from("<H", data, pe + 24 + 68)[0]
+    if subsystem != 2:
+        raise ValueError("Release executable must use the Windows GUI subsystem")
+
+
 def dependency_notices(metadata):
     blocks = ["Veyva dependency license inventory", "Generated from locked Cargo metadata; review before distribution."]
     for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version"])):
@@ -108,6 +117,7 @@ def package_release(tag):
     _, notes = validate_project(tag)
     binary = ROOT / "target/release/veyva.exe"
     imports = imported_dlls(binary)
+    validate_desktop_subsystem(binary)
     if any(name.lower().startswith(("vcruntime", "msvcp")) for name in imports):
         raise ValueError("Portable release unexpectedly depends on a dynamic MSVC runtime")
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--offline", "--format-version", "1"], cwd=ROOT, text=True))
