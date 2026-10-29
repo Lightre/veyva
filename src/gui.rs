@@ -280,15 +280,22 @@ impl App {
                 });
             },
         );
-        if ui
-            .add_enabled(
-                self.device_scan.is_none(),
-                egui::Button::new(if self.device_scan.is_some() {
-                    "Scanning..."
-                } else {
-                    "Refresh devices"
-                }),
-            )
+        if let Some(error) = &self.audio_load_error {
+            banner(ui, error, CORAL);
+        }
+    }
+
+    fn refresh_audio_devices(&mut self, ui: &mut egui::Ui, palette: Palette) {
+        let scanning = self.device_scan.is_some();
+        let response = ui
+            .add_enabled_ui(!scanning, |ui| refresh_icon(ui, palette))
+            .inner;
+        if response
+            .on_hover_text(if scanning {
+                "Scanning audio devices..."
+            } else {
+                "Refresh audio devices"
+            })
             .clicked()
         {
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -302,9 +309,6 @@ impl App {
                 Ok(_) => self.device_scan = Some(receiver),
                 Err(error) => self.error = Some(error.to_string()),
             }
-        }
-        if let Some(error) = &self.audio_load_error {
-            banner(ui, error, CORAL);
         }
     }
 
@@ -950,7 +954,12 @@ impl App {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
-        ui.label(RichText::new("Audio").size(18.0).strong());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Audio").size(18.0).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.refresh_audio_devices(ui, p)
+            });
+        });
         let label = if state.audio_active {
             "Audio capture active"
         } else if self.active() && self.settings.audio_enabled {
@@ -1021,10 +1030,6 @@ impl App {
                 .small()
                 .color(p.muted),
         );
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(8.0);
-        self.appearance(ui);
     }
 
     fn capture(&mut self, ui: &mut egui::Ui) {
@@ -1947,4 +1952,50 @@ fn audio_device_choice(
                 ui.selectable_value(selected, Some(device.id.clone()), &device.name);
             }
         });
+}
+
+fn refresh_icon(ui: &mut egui::Ui, palette: Palette) -> egui::Response {
+    let response = ui.add_sized([28.0, 28.0], egui::Button::new("").frame(false));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            "Refresh audio devices",
+        )
+    });
+    if response.hovered() || response.has_focus() {
+        ui.painter()
+            .rect_filled(response.rect, 5.0, palette.surface);
+    }
+    let color = if !ui.is_enabled() {
+        palette.muted.gamma_multiply(0.5)
+    } else if response.hovered() || response.has_focus() {
+        palette.accent
+    } else {
+        palette.muted
+    };
+    let center = response.rect.center();
+    let radius = 6.0;
+    let points: Vec<_> = (0..=24)
+        .map(|step| {
+            let angle =
+                std::f32::consts::FRAC_PI_2 + step as f32 / 24.0 * std::f32::consts::PI * 1.65;
+            center + Vec2::angled(angle) * radius
+        })
+        .collect();
+    let tip = *points.last().unwrap();
+    let tangent = (tip - points[points.len() - 2]).normalized();
+    let normal = Vec2::new(-tangent.y, tangent.x);
+    ui.painter()
+        .add(egui::Shape::line(points, egui::Stroke::new(1.5_f32, color)));
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            tip + tangent * 2.0,
+            tip - tangent * 3.0 + normal * 3.0,
+            tip - tangent * 3.0 - normal * 3.0,
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
+    response
 }
