@@ -39,3 +39,15 @@ The provisional icon was replaced with a simple two-tone V. SVG geometry is the 
 ## Branding update
 
 The project brand is now Veyva. Historical validation entries above retain the names and paths observed during those earlier runs; those references describe the prior executable and log locations and were not changed by this rename. The new runtime log location is `%LOCALAPPDATA%\Veyva\veyva.log`.
+
+## Thirty-second desktop measurement
+
+On 2026-10-29, the measurement tool ran a 5-second pre-capture baseline and a 30-second selected-display recording on the previously identified Vega 8 system (4 logical processors). The 31-second process observation includes startup and MP4 export. All 62 process samples succeeded; no timeout occurred.
+
+- Encoded 893 of 900 target frame slots; 7 skips (5 scheduler-late, 2 encoder-busy); no missing-first-frame or allocator-empty skips.
+- Process CPU averaged 0.718% of total logical CPU capacity (0.0287 core equivalents).
+- Peak sampled working set: 48,005,120 bytes (45.8 MiB); peak sampled private bytes: 49,168,384 bytes (46.9 MiB). Sampling may miss brief peaks.
+- Total system CPU averaged 20.93% before capture and 33.23% during the process observation. These sequential intervals are not a matched causal comparison; the difference cannot be attributed entirely to Veyva.
+- FFprobe read 893 H.264 frames at 1280x720 and reported exactly 30.000 seconds. MP4 size: 11,172,425 bytes; logged export time: 65 ms.
+
+Raw CSV/JSON, process log and private footage are in ignored `work/measurement-20261029T005702Z/`. The observed desktop workload was not scripted. No game FPS, GPU utilization, driver CPU attribution or long-session memory stability was measured. This run does not establish the cause of earlier intermittent stalls or prove low overhead in games.
