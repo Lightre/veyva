@@ -4,7 +4,7 @@
 
 The initial release format is a Windows x64 portable ZIP. Extract it into a stable directory and run `veyva.exe`; there is no MSI installation. Preferences remain under `%LOCALAPPDATA%\Veyva`, and clips default to the user's Videos directory. This is installation-free distribution, not a mode that stores all settings beside the executable.
 
-A compatible D3D11 GPU, hardware H.264 encoder, OpenGL support and Windows media components are still required. The workflow statically links the MSVC runtime and rejects normal PE imports of dynamic VCRUNTIME/MSVCP libraries. This check does not prove compatibility on every Windows installation; media components, drivers and DLLs loaded indirectly still require a clean-machine smoke test. Binaries are unsigned.
+A compatible D3D11 GPU, hardware H.264 encoder, OpenGL support and Windows media components are still required. The workflow statically links the MSVC runtime and rejects normal PE imports of dynamic VCRUNTIME/MSVCP libraries. Packaging also rejects a console-subsystem executable. This check does not prove compatibility on every Windows installation; media components, drivers and DLLs loaded indirectly still require a clean-machine smoke test. Binaries are unsigned.
 
 MSI packaging can be added when managed installation, uninstall registration or machine-wide deployment is needed. It is not necessary for the current per-user application.
 

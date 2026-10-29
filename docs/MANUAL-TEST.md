@@ -53,3 +53,10 @@ Record the Windows version, GPU/driver, monitor resolution/scaling and capture p
 - Forced termination, power loss and Windows logoff may interrupt unfinished files. Keep those cases separate from normal graceful shutdown.
 
 The CLI measurement tool is documented in [PERFORMANCE.md](PERFORMANCE.md). Use reproducible steps and sanitized diagnostics in reports; avoid publishing private clips or personal paths.
+
+
+## Desktop launch and diagnostic console
+
+- Double-click veyva.exe in Explorer and open it through a shortcut: no extra console window should appear. Repeat login/background launch and verify tray behavior.
+- Run CLI help and settings show from an existing terminal. Verify redirected stdout/stderr and nonzero exit codes for invalid arguments, without starting capture. PowerShell may not wait automatically for a GUI-subsystem executable; use Start-Process -NoNewWindow -Wait or a redirected subprocess.
+- Verify desktop startup failures are reported in a native error dialog and the application log. Do not force a failure by modifying personal settings without a backup.

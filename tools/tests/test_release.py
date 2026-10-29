@@ -51,6 +51,13 @@ class ReleaseTests(unittest.TestCase):
             path = Path(folder) / "fixture.exe"
             path.write_bytes(data)
             self.assertEqual(release.imported_dlls(path), ["VCRUNTIME140.dll"])
+            struct.pack_into("<H", data, 0x98 + 68, 3)
+            path.write_bytes(data)
+            with self.assertRaises(ValueError):
+                release.validate_desktop_subsystem(path)
+            struct.pack_into("<H", data, 0x98 + 68, 2)
+            path.write_bytes(data)
+            release.validate_desktop_subsystem(path)
             struct.pack_into("<H", data, 0x84, 0x14c)
             path.write_bytes(data)
             with self.assertRaises(ValueError):

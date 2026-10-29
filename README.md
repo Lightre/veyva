@@ -28,6 +28,8 @@ cargo build --release
 .\target\release\veyva.exe gui
 ```
 
+Normal desktop launches do not open a console window. Diagnostic CLI commands attach to the existing parent console when available and preserve redirected output. In PowerShell, use `Start-Process -FilePath .\target\release\veyva.exe -ArgumentList "settings", "show" -NoNewWindow -Wait` when synchronous completion is needed.
+
 Use `--offline` with Cargo when dependencies are already cached. The resource compiler embeds the application icon; set `VEYVA_RC` to an explicit `rc.exe` path if automatic discovery fails.
 
 1. Open Veyva and select a capture profile. Replay arms on launch by default.
