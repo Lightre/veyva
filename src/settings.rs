@@ -87,9 +87,26 @@ impl CaptureProfile {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl Theme {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub profile: CaptureProfile,
+    pub theme: Theme,
     pub monitor: u32,
     pub replay_auto_start: bool,
     pub audio_enabled: bool,
@@ -101,6 +118,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             profile: CaptureProfile::low_end(),
+            theme: Theme::default(),
             monitor: 0,
             replay_auto_start: true,
             audio_enabled: true,
@@ -178,6 +196,15 @@ impl Settings {
 
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
         let mut candidate = *self;
+        if key == "theme" {
+            candidate.theme = match value {
+                "dark" => Theme::Dark,
+                "light" => Theme::Light,
+                _ => return Err("theme must be dark or light".into()),
+            };
+            *self = candidate;
+            return Ok(());
+        }
         let parsed = value
             .parse::<u32>()
             .map_err(|_| format!("{key} must be an unsigned integer"))?;
@@ -205,7 +232,7 @@ impl Settings {
 
     pub fn to_text(self) -> String {
         format!(
-            "version=2\nwidth={}\nheight={}\nfps={}\nvideo_kbps={}\naudio_kbps={}\nhistory_seconds={}\nreplay_budget_mib={}\nmonitor={}\nreplay_auto_start={}\naudio_enabled={}\nhotkey_modifiers={}\nhotkey_key={}\n",
+            "version=2\nwidth={}\nheight={}\nfps={}\nvideo_kbps={}\naudio_kbps={}\nhistory_seconds={}\nreplay_budget_mib={}\nmonitor={}\nreplay_auto_start={}\naudio_enabled={}\nhotkey_modifiers={}\nhotkey_key={}\ntheme={}\n",
             self.profile.width,
             self.profile.height,
             self.profile.fps,
@@ -218,6 +245,7 @@ impl Settings {
             u32::from(self.audio_enabled),
             self.hotkey_modifiers,
             self.hotkey_key,
+            self.theme.as_str(),
         )
     }
 
@@ -235,6 +263,7 @@ impl Settings {
         let mut audio_enabled = None;
         let mut hotkey_modifiers = None;
         let mut hotkey_key = None;
+        let mut theme = None;
 
         for (index, line) in contents.lines().enumerate() {
             let (key, value) = line
@@ -257,6 +286,17 @@ impl Settings {
                 "audio_enabled" => &mut audio_enabled,
                 "hotkey_modifiers" => &mut hotkey_modifiers,
                 "hotkey_key" => &mut hotkey_key,
+                "theme" => {
+                    if theme.is_some() {
+                        return Err("duplicate setting: theme".into());
+                    }
+                    theme = Some(match value {
+                        "dark" => Theme::Dark,
+                        "light" => Theme::Light,
+                        _ => return Err("invalid theme: expected dark or light".into()),
+                    });
+                    continue;
+                }
                 _ => return Err(format!("unknown setting: {key}")),
             };
             if slot.is_some() {
@@ -300,6 +340,7 @@ impl Settings {
         }
         let result = Self {
             profile,
+            theme: theme.unwrap_or_default(),
             monitor: required(monitor, "monitor")?,
             replay_auto_start: auto == 1,
             audio_enabled: audio == 1,
@@ -372,8 +413,40 @@ mod tests {
     }
     #[test]
     fn settings_text_round_trips() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.theme = Theme::Light;
         assert_eq!(Settings::from_text(&settings.to_text()).unwrap(), settings);
+    }
+
+    #[test]
+    fn legacy_and_v2_settings_default_missing_theme_to_dark() {
+        let current = Settings::default().to_text();
+        let without_theme = current
+            .lines()
+            .filter(|line| !line.starts_with("theme="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            Settings::from_text(&without_theme).unwrap().theme,
+            Theme::Dark
+        );
+
+        let legacy = without_theme.replace("version=2", "version=1");
+        assert_eq!(Settings::from_text(&legacy).unwrap().theme, Theme::Dark);
+    }
+
+    #[test]
+    fn rejects_invalid_or_duplicate_theme_and_sets_named_values() {
+        let valid = Settings::default().to_text();
+        assert!(Settings::from_text(&valid.replace("theme=dark", "theme=sepia")).is_err());
+        assert!(Settings::from_text(&format!("{valid}theme=light\n")).is_err());
+
+        let mut settings = Settings::default();
+        settings.set("theme", "light").unwrap();
+        assert_eq!(settings.theme, Theme::Light);
+        settings.set("theme", "dark").unwrap();
+        assert_eq!(settings.theme, Theme::Dark);
+        assert!(settings.set("theme", "0").is_err());
     }
 
     #[test]

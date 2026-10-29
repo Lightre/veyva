@@ -85,3 +85,10 @@ The WASAPI buffer capacity request was increased from 20 ms to 100 ms to tolerat
 Deferred audio diagnostics keep counters plus at most 24 numeric events in memory (startup context and recent glitches). On shutdown/error they log device-discontinuity flags, invalid timestamps, inserted/trimmed frame totals, idle-fill totals, backlog observations and maximum poll interval. No packet-loop terminal/file writes were introduced.
 
 Five isolated audio alignment/silence-policy tests and integrated Clippy passed. No new live recording, listening or release build was performed. The residual crackle remains unconfirmed until the same source is tested; the counters should distinguish genuine capture discontinuities from application alignment/silence insertion.
+
+
+## Approved C desktop redesign
+
+The native layout now uses horizontal navigation, separate recording/replay controls, a right inspector and a custom titlebar. Dark/light palettes and immediate appearance persistence were added without capture engine changes. Seven isolated settings tests passed, including old-file migration, both theme roundtrips, invalid/duplicate theme rejection, atomic updates and save/replace behavior. Incremental offline compilation and Clippy with warnings denied passed.
+
+Both editable Figma theme frames were visually inspected. No release build, GUI launch, recording or native screenshot comparison was performed for this change. Windows snap, custom resize handles, DPI scaling, safe close while saving, theme persistence across restart, and the rendered layout remain manual checks. Prior capture/audio evidence is unchanged.

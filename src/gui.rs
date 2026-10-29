@@ -1,14 +1,78 @@
 use crate::session::{self, Command, Session};
-use crate::settings::{CaptureProfile, Settings};
+use crate::settings::{CaptureProfile, Settings, Theme};
 use eframe::egui::{self, Color32, RichText, Vec2};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const INK: Color32 = Color32::from_rgb(16, 21, 28);
-const SLATE: Color32 = Color32::from_rgb(24, 34, 45);
-const MINT: Color32 = Color32::from_rgb(112, 226, 188);
-const MUTED: Color32 = Color32::from_rgb(147, 165, 184);
-const CORAL: Color32 = Color32::from_rgb(255, 125, 135);
+const CORAL: Color32 = Color32::from_rgb(225, 86, 104);
+
+#[derive(Clone, Copy)]
+struct Palette {
+    background: Color32,
+    surface: Color32,
+    border: Color32,
+    text: Color32,
+    muted: Color32,
+    accent: Color32,
+    accent_text: Color32,
+}
+
+impl Palette {
+    fn for_theme(theme: Theme) -> Self {
+        let rgb = Color32::from_rgb;
+        match theme {
+            Theme::Dark => Self {
+                background: rgb(16, 21, 28),
+                surface: rgb(24, 34, 45),
+                border: rgb(48, 64, 78),
+                text: rgb(238, 244, 247),
+                muted: rgb(169, 183, 198),
+                accent: rgb(112, 226, 188),
+                accent_text: rgb(16, 21, 28),
+            },
+            Theme::Light => Self {
+                background: rgb(250, 250, 248),
+                surface: rgb(240, 242, 239),
+                border: rgb(217, 223, 217),
+                text: rgb(27, 41, 37),
+                muted: rgb(104, 118, 111),
+                accent: rgb(36, 91, 72),
+                accent_text: Color32::WHITE,
+            },
+        }
+    }
+}
+
+fn apply_theme(ctx: &egui::Context, theme: Theme) {
+    let p = Palette::for_theme(theme);
+    let mut style = (*ctx.style()).clone();
+    style.visuals = match theme {
+        Theme::Dark => egui::Visuals::dark(),
+        Theme::Light => egui::Visuals::light(),
+    };
+    style.visuals.panel_fill = p.background;
+    style.visuals.window_fill = p.surface;
+    style.visuals.extreme_bg_color = p.surface;
+    style.visuals.override_text_color = Some(p.text);
+    style.visuals.selection.bg_fill = p.accent.gamma_multiply(0.25);
+    style.visuals.selection.stroke.color = p.accent;
+    style.visuals.widgets.inactive.bg_fill = p.surface;
+    style.visuals.widgets.inactive.weak_bg_fill = p.surface;
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, p.border);
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, p.border);
+    style.visuals.widgets.hovered.bg_fill = p.accent.gamma_multiply(0.18);
+    style.visuals.widgets.hovered.weak_bg_fill = p.surface;
+    style.visuals.widgets.active.bg_fill = p.accent.gamma_multiply(0.3);
+    style.spacing.item_spacing = Vec2::new(12.0, 12.0);
+    style.spacing.button_padding = Vec2::new(16.0, 10.0);
+    style
+        .text_styles
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(24.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+    ctx.set_style(style);
+}
 
 pub fn run() -> Result<(), String> {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/preview.png"))
@@ -16,8 +80,9 @@ pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Veyva")
-            .with_inner_size([1080.0, 820.0])
-            .with_min_inner_size([860.0, 680.0])
+            .with_decorations(false)
+            .with_inner_size([1180.0, 860.0])
+            .with_min_inner_size([1000.0, 740.0])
             .with_icon(icon),
         ..Default::default()
     };
@@ -34,6 +99,7 @@ enum Page {
 
 struct App {
     page: Page,
+    logo: egui::TextureHandle,
     settings: Settings,
     settings_path: Result<PathBuf, String>,
     load_error: Option<String>,
@@ -50,25 +116,6 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = INK;
-        style.visuals.window_fill = SLATE;
-        style.visuals.extreme_bg_color = INK;
-        style.visuals.selection.bg_fill = MINT.gamma_multiply(0.25);
-        style.visuals.selection.stroke.color = MINT;
-        style.visuals.widgets.inactive.bg_fill = SLATE;
-        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(43, 59, 73);
-        style.visuals.widgets.active.bg_fill = Color32::from_rgb(51, 78, 79);
-        style.spacing.item_spacing = Vec2::new(12.0, 12.0);
-        style.spacing.button_padding = Vec2::new(18.0, 11.0);
-        style
-            .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(28.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
-        cc.egui_ctx.set_style(style);
         let settings_path = Settings::default_path();
         let loaded = settings_path
             .as_ref()
@@ -78,6 +125,17 @@ impl App {
             Ok(s) => (s, None),
             Err(e) => (Settings::default(), Some(e)),
         };
+        apply_theme(&cc.egui_ctx, settings.theme);
+        let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/preview.png"))
+            .expect("embedded app icon was validated before opening the window");
+        let logo = cc.egui_ctx.load_texture(
+            "veyva-mark",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width as usize, icon.height as usize],
+                &icon.rgba,
+            ),
+            egui::TextureOptions::LINEAR,
+        );
         let output = std::env::var_os("USERPROFILE")
             .map(PathBuf::from)
             .map(|p| {
@@ -89,6 +147,7 @@ impl App {
             .unwrap_or_default();
         Self {
             page: Page::Capture,
+            logo,
             settings,
             settings_path,
             load_error,
@@ -195,12 +254,203 @@ impl App {
             self.send(Command::StartRecording(path));
         }
     }
-    fn capture(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Capture");
-        ui.label(
-            RichText::new("Two ways to keep the moment. One shared capture engine.").color(MUTED),
+    fn appearance(&mut self, ui: &mut egui::Ui) {
+        let previous = self.settings.theme;
+        ui.label("Appearance");
+        egui::ComboBox::from_id_salt("appearance")
+            .width(ui.available_width() - 12.0)
+            .selected_text(match previous {
+                Theme::Dark => "Dark",
+                Theme::Light => "Light",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.settings.theme, Theme::Dark, "Dark");
+                ui.selectable_value(&mut self.settings.theme, Theme::Light, "Light");
+            });
+        if self.settings.theme != previous {
+            // Save only appearance; unsaved capture preferences stay a draft.
+            let result = self
+                .settings_path
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|path| {
+                    if self.load_error.is_some() {
+                        return Err("Reset unreadable settings before saving appearance".into());
+                    }
+                    let mut saved = Settings::load(path)?;
+                    saved.theme = self.settings.theme;
+                    saved.save(path)
+                });
+            match result {
+                Ok(()) => apply_theme(&self.context, self.settings.theme),
+                Err(error) => {
+                    self.settings.theme = previous;
+                    self.error = Some(error);
+                }
+            }
+        }
+    }
+
+    fn titlebar(&mut self, ctx: &egui::Context) {
+        let p = Palette::for_theme(self.settings.theme);
+        egui::TopBottomPanel::top("titlebar")
+            .exact_height(72.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(p.background)
+                    .inner_margin(egui::Margin::symmetric(22.0, 14.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.image((self.logo.id(), Vec2::splat(32.0)));
+                    ui.label(RichText::new("Veyva").size(25.0).strong());
+                    ui.add_space(28.0);
+                    for (page, label) in [
+                        (Page::Capture, "Capture"),
+                        (Page::Settings, "Preferences"),
+                        (Page::About, "About"),
+                    ] {
+                        let selected = self.page == page;
+                        let response = ui.add(
+                            egui::Button::new(RichText::new(label).color(if selected {
+                                p.accent
+                            } else {
+                                p.muted
+                            }))
+                            .frame(false),
+                        );
+                        if selected {
+                            ui.painter().hline(
+                                response.rect.x_range(),
+                                ui.max_rect().bottom() + 13.0,
+                                egui::Stroke::new(3.0_f32, p.accent),
+                            );
+                        }
+                        if response.clicked() {
+                            self.page = page;
+                        }
+                    }
+                    let drag_size = Vec2::new((ui.available_width() - 140.0).max(0.0), 40.0);
+                    let drag = ui.allocate_response(drag_size, egui::Sense::click_and_drag());
+                    if drag.double_clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(
+                            !ctx.input(|i| i.viewport().maximized.unwrap_or(false)),
+                        ));
+                    } else if drag.drag_started_by(egui::PointerButton::Primary) {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
+                    if ui
+                        .add(egui::Button::new("—").frame(false))
+                        .on_hover_text("Minimize")
+                        .clicked()
+                    {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                    if ui
+                        .add(egui::Button::new("□").frame(false))
+                        .on_hover_text("Maximize / Restore")
+                        .clicked()
+                    {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(
+                            !ctx.input(|i| i.viewport().maximized.unwrap_or(false)),
+                        ));
+                    }
+                    if ui
+                        .add(egui::Button::new("×").frame(false))
+                        .on_hover_text("Close")
+                        .clicked()
+                    {
+                        if self.active() {
+                            self.closing = true;
+                            self.send(Command::Stop);
+                        } else {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
+                });
+            });
+    }
+
+    fn inspector(&mut self, ui: &mut egui::Ui) {
+        let p = Palette::for_theme(self.settings.theme);
+        let state = self
+            .session
+            .as_ref()
+            .and_then(|s| s.status.lock().ok())
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        let profile = self.settings.profile;
+        ui.label(RichText::new("Capture settings").size(18.0).strong());
+        ui.add_space(10.0);
+        readout(
+            ui,
+            "Video quality",
+            &format!("{} × {}", profile.width, profile.height),
         );
-        ui.add_space(18.0);
+        readout(ui, "Frame rate", &format!("{} fps", profile.fps));
+        readout(ui, "Video codec", "H.264 · Hardware");
+        if ui.small_button("Edit capture preferences").clicked() {
+            self.page = Page::Settings;
+        }
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.label(RichText::new("Audio").size(18.0).strong());
+        let label = if state.audio_active {
+            "● System audio active"
+        } else if self.active() && self.settings.audio_enabled {
+            "System audio starting / unavailable"
+        } else if self.settings.audio_enabled {
+            "System audio enabled"
+        } else {
+            "System audio off"
+        };
+        ui.colored_label(
+            if state.audio_active {
+                p.accent
+            } else {
+                p.muted
+            },
+            label,
+        );
+        ui.label(
+            RichText::new("Default Windows output device")
+                .small()
+                .color(p.muted),
+        );
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut false, "Microphone · Coming later"),
+        );
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.label("File destination");
+        ui.add(egui::TextEdit::singleline(&mut self.output).desired_width(ui.available_width()));
+        if ui.small_button("Open folder").clicked() {
+            let path = PathBuf::from(self.output.trim());
+            if path.is_dir() {
+                if let Err(error) = std::process::Command::new("explorer.exe").arg(path).spawn() {
+                    self.error = Some(error.to_string());
+                }
+            } else {
+                self.error =
+                    Some("The folder is created when a recording or replay is saved".into());
+            }
+        }
+        ui.label(
+            RichText::new("Folder choice applies to this session.")
+                .small()
+                .color(p.muted),
+        );
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+        self.appearance(ui);
+    }
+
+    fn capture(&mut self, ui: &mut egui::Ui) {
+        let p = Palette::for_theme(self.settings.theme);
         let state = self
             .session
             .as_ref()
@@ -209,30 +459,12 @@ impl App {
             .unwrap_or_default();
         let active = self.active();
         let stopping = state.phase.starts_with("Stopping");
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("NORMAL RECORDING")
-                        .small()
-                        .strong()
-                        .color(MUTED),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(
-                        if state.recording { MINT } else { MUTED },
-                        if state.finalizing {
-                            "Finalizing file..."
-                        } else if state.paused {
-                            "Paused"
-                        } else if state.recording {
-                            "Recording"
-                        } else {
-                            "Ready"
-                        },
-                    );
-                });
-            });
+        ui.heading("Normal recording");
+        ui.label(RichText::new("Record your screen and system audio.").color(p.muted));
+        ui.add_space(40.0);
+        ui.vertical_centered(|ui| {
             let secs = state.recorded_seconds.max(0.0) as u64;
+            let size = (ui.available_width() / 7.5).clamp(48.0, 76.0);
             ui.label(
                 RichText::new(format!(
                     "{:02}:{:02}:{:02}",
@@ -240,213 +472,164 @@ impl App {
                     (secs / 60) % 60,
                     secs % 60
                 ))
-                .size(42.0)
-                .strong(),
+                .size(size),
             );
+            let label = if state.finalizing {
+                "Finalizing file..."
+            } else if state.paused {
+                "Paused"
+            } else if state.recording {
+                "Recording"
+            } else {
+                "Ready to record"
+            };
             ui.label(
-                RichText::new(
-                    "Start, pause, resume, then finish and save. Replay stays independent.",
-                )
-                .color(MUTED),
+                RichText::new(format!("●  {label}")).color(if state.recording {
+                    p.accent
+                } else {
+                    p.muted
+                }),
             );
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !state.recording
-                            && !state.finalizing
-                            && !stopping
-                            && !self.closing
-                            && self.load_error.is_none(),
-                        egui::Button::new(RichText::new("Start recording").color(INK)).fill(MINT),
-                    )
-                    .clicked()
-                {
-                    self.start_recording();
-                }
-                if ui
-                    .add_enabled(
-                        state.recording && !state.finalizing && !self.closing,
-                        egui::Button::new(if state.paused { "Resume" } else { "Pause" }),
-                    )
-                    .clicked()
-                {
-                    self.send(if state.paused {
-                        Command::ResumeRecording
-                    } else {
-                        Command::PauseRecording
-                    });
-                }
-                if ui
-                    .add_enabled(
-                        state.recording && !state.finalizing && !self.closing,
-                        egui::Button::new("Finish & save"),
-                    )
-                    .clicked()
-                {
-                    self.send(Command::FinishRecording);
-                }
-            });
         });
+        ui.add_space(42.0);
+        ui.horizontal(|ui| {
+            let width = ((ui.available_width() - 24.0) / 3.0).max(130.0);
+            if action(
+                ui,
+                "Start recording",
+                width,
+                !state.recording
+                    && !state.finalizing
+                    && !stopping
+                    && !self.closing
+                    && self.load_error.is_none(),
+                Some(p),
+            )
+            .clicked()
+            {
+                self.start_recording();
+            }
+            if action(
+                ui,
+                if state.paused { "Resume" } else { "Pause" },
+                width,
+                state.recording && !state.finalizing && !self.closing,
+                None,
+            )
+            .clicked()
+            {
+                self.send(if state.paused {
+                    Command::ResumeRecording
+                } else {
+                    Command::PauseRecording
+                });
+            }
+            if action(
+                ui,
+                "Finish & save",
+                width,
+                state.recording && !state.finalizing && !self.closing,
+                None,
+            )
+            .clicked()
+            {
+                self.send(Command::FinishRecording);
+            }
+        });
+        ui.add_space(22.0);
+        ui.separator();
         ui.add_space(16.0);
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("INSTANT REPLAY")
-                        .small()
-                        .strong()
-                        .color(MUTED),
-                );
-                ui.colored_label(
-                    if state.replay_enabled { MINT } else { MUTED },
-                    if state.replay_enabled { "Armed" } else { "Off" },
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{:.1}s", state.buffered_seconds))
-                        .size(34.0)
-                        .strong(),
-                );
-                ui.label(
-                    RichText::new(format!(
-                        "of {} seconds configured history",
-                        self.settings.profile.history_seconds
-                    ))
-                    .color(MUTED),
-                );
-            });
-            ui.add(
-                egui::ProgressBar::new(
-                    (state.buffered_seconds / f64::from(self.settings.profile.history_seconds))
-                        .clamp(0.0, 1.0) as f32,
-                )
-                .fill(MINT)
-                .desired_height(4.0),
+        ui.columns(2, |columns| {
+            readout(
+                &mut columns[0],
+                "Record display",
+                &format!("Monitor {}", u64::from(self.settings.monitor) + 1),
             );
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        active
-                            && state.replay_enabled
-                            && state.buffered_seconds > 0.0
-                            && !state.saving
-                            && !self.closing
-                            && !stopping,
-                        egui::Button::new(
-                            RichText::new(if state.saving {
-                                "Saving..."
-                            } else {
-                                "Save replay"
-                            })
-                            .color(INK),
-                        )
-                        .fill(MINT),
-                    )
-                    .clicked()
+            readout(&mut columns[1], "Recording area", "Entire display");
+        });
+        ui.add_space(18.0);
+        ui.separator();
+        ui.add_space(18.0);
+        ui.label(RichText::new("Instant replay").size(22.0).strong());
+        ui.label(
+            RichText::new("Keep the last moments. Save independently of normal recording.")
+                .color(p.muted),
+        );
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            let mut armed = state.replay_enabled;
+            if ui
+                .add_enabled(
+                    !self.closing && !stopping && self.load_error.is_none(),
+                    egui::Checkbox::new(&mut armed, "Armed"),
+                )
+                .changed()
+            {
+                if !active {
+                    self.start();
+                }
+                if self.active() {
+                    self.send(Command::SetReplayEnabled(armed));
+                }
+            }
+            ui.label(format!(
+                "{:.1}s / {}s",
+                state.buffered_seconds, self.settings.profile.history_seconds
+            ));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if action(
+                    ui,
+                    if state.saving {
+                        "Saving..."
+                    } else {
+                        "Save replay"
+                    },
+                    150.0,
+                    active
+                        && state.replay_enabled
+                        && state.buffered_seconds > 0.0
+                        && !state.saving
+                        && !self.closing
+                        && !stopping,
+                    Some(p),
+                )
+                .clicked()
                 {
                     self.save_replay();
                 }
-                ui.label(
-                    RichText::new(crate::hotkey::label(
-                        self.settings.hotkey_modifiers,
-                        self.settings.hotkey_key,
-                    ))
-                    .color(MINT)
-                    .strong(),
-                );
-                if ui
-                    .add_enabled(
-                        !self.closing && !stopping,
-                        egui::Button::new(if state.replay_enabled {
-                            "Turn off replay"
-                        } else {
-                            "Turn on replay"
-                        }),
-                    )
-                    .clicked()
-                {
-                    if !active {
-                        self.start();
-                    }
-                    if self.active() {
-                        self.send(Command::SetReplayEnabled(!state.replay_enabled));
-                    }
-                }
             });
-            ui.label(
-                RichText::new(format!(
-                    "{:.1} MiB encoded history / {} MiB budget   |   {} frames   |   {} skipped",
-                    state.buffer_bytes as f64 / 1_048_576.0,
-                    self.settings.profile.replay_budget_mib,
-                    state.submitted,
-                    state.dropped
-                ))
-                .small()
-                .color(MUTED),
-            );
         });
-        ui.add_space(14.0);
-        let p = self.settings.profile;
-        ui.horizontal(|ui| {
-            ui.colored_label(
-                if state.audio_active { MINT } else { MUTED },
-                if state.audio_active {
-                    "System audio: on"
-                } else if self.settings.audio_enabled && active {
-                    "System audio: unavailable / starting"
-                } else {
-                    "System audio: off"
-                },
-            );
-            ui.separator();
+        ui.add(
+            egui::ProgressBar::new(
+                (state.buffered_seconds / f64::from(self.settings.profile.history_seconds))
+                    .clamp(0.0, 1.0) as f32,
+            )
+            .fill(p.accent)
+            .desired_height(3.0),
+        );
+        ui.label(
+            RichText::new(format!(
+                "{}  ·  {:.1} / {} MiB history  ·  {} skipped frames",
+                crate::hotkey::label(self.settings.hotkey_modifiers, self.settings.hotkey_key),
+                state.buffer_bytes as f64 / 1_048_576.0,
+                self.settings.profile.replay_budget_mib,
+                state.dropped
+            ))
+            .small()
+            .color(p.muted),
+        );
+        if let Some(path) = state.last_saved {
             ui.label(
-                RichText::new(format!(
-                    "{} x {} / {} fps / {:.1} Mbps",
-                    p.width,
-                    p.height,
-                    p.fps,
-                    p.video_kbps as f64 / 1000.0
-                ))
-                .color(MUTED),
+                RichText::new(format!("Saved: {}", path.display()))
+                    .small()
+                    .color(p.accent),
             );
-            if ui.small_button("Preferences").clicked() {
-                self.page = Page::Settings;
-            }
-        });
+        }
         if let Some(error) = state.audio_error {
             banner(
                 ui,
                 &format!("System audio unavailable: {error}. Files may contain video only."),
                 CORAL,
-            );
-        }
-        ui.add_space(14.0);
-        ui.label(RichText::new("SAVE LOCATION").small().strong().color(MUTED));
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.output)
-                    .desired_width((ui.available_width() - 120.0).max(100.0)),
-            );
-            if ui.button("Open folder").clicked() {
-                let path = PathBuf::from(self.output.trim());
-                if path.is_dir() {
-                    if let Err(error) = std::process::Command::new("explorer.exe").arg(path).spawn()
-                    {
-                        self.error = Some(error.to_string());
-                    }
-                } else {
-                    self.error = Some(
-                        "The folder is created when you start recording or save a replay".into(),
-                    );
-                }
-            }
-        });
-        if let Some(path) = state.last_saved {
-            ui.label(
-                RichText::new(format!("Saved: {}", path.display()))
-                    .small()
-                    .color(MINT),
             );
         }
         if let Some(error) = state.error {
@@ -458,15 +641,18 @@ impl App {
     }
 
     fn settings(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Capture settings");
-        ui.label(RichText::new("Choose a profile that fits your machine.").color(MUTED));
+        let palette = Palette::for_theme(self.settings.theme);
+        ui.heading("Preferences");
+        self.appearance(ui);
+        ui.add_space(20.0);
+        ui.label(RichText::new("Choose a profile that fits your machine.").color(palette.muted));
         ui.add_space(16.0);
         let active = self.active();
         if active {
             banner(
                 ui,
                 "Stop capture to edit settings. Replay history will be cleared.",
-                MINT,
+                palette.accent,
             );
             let busy = self
                 .session
@@ -482,14 +668,14 @@ impl App {
         }
         ui.add_enabled_ui(!active && !self.closing && self.load_error.is_none(), |ui| {
             card(ui, |ui| {
-                ui.label(RichText::new("QUALITY PRESET").small().strong().color(MUTED));
+                ui.label(RichText::new("QUALITY PRESET").small().strong().color(palette.muted));
                 ui.horizontal(|ui| {
                     for (name, profile) in [("Low impact",CaptureProfile::low_end()),("Balanced",CaptureProfile::balanced()),("High quality",CaptureProfile::high())] {
                         if ui.selectable_label(self.settings.profile == profile,name).clicked() { self.settings.profile = profile; }
                     }
-                    if ![CaptureProfile::low_end(),CaptureProfile::balanced(),CaptureProfile::high()].contains(&self.settings.profile) { ui.label(RichText::new("Custom").color(MINT)); }
+                    if ![CaptureProfile::low_end(),CaptureProfile::balanced(),CaptureProfile::high()].contains(&self.settings.profile) { ui.label(RichText::new("Custom").color(palette.accent)); }
                 });
-                ui.label(RichText::new("Presets are targets. Actual performance depends on your hardware.").small().color(MUTED));
+                ui.label(RichText::new("Presets are targets. Actual performance depends on your hardware.").small().color(palette.muted));
             });
             ui.add_space(10.0);
             card(ui, |ui| {
@@ -504,11 +690,11 @@ impl App {
                 });
             });
             ui.add_space(8.0);
-            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. System audio uses the default Windows output device. Microphone capture is not included.").small().color(MUTED));
+            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. System audio uses the default Windows output device. Microphone capture is not included.").small().color(palette.muted));
             card(ui, |ui| {
                 ui.checkbox(&mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
                 ui.checkbox(&mut self.settings.audio_enabled,"Record system audio");
-                ui.label(RichText::new("SAVE REPLAY SHORTCUT").small().strong().color(MUTED));
+                ui.label(RichText::new("SAVE REPLAY SHORTCUT").small().strong().color(palette.muted));
                 ui.horizontal(|ui|{
                     for (flag,label) in [(1,"Alt"),(2,"Ctrl"),(4,"Shift"),(8,"Win")] {
                         let mut enabled=self.settings.hotkey_modifiers&flag!=0;
@@ -558,39 +744,30 @@ impl eframe::App for App {
         if self.active() || self.closing {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
-        egui::SidePanel::left("navigation")
-            .exact_width(184.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(13, 18, 24))
-                    .inner_margin(24.0),
-            )
-            .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.label(RichText::new("V /  Veyva").size(25.0).strong().color(MINT));
-                ui.label(RichText::new("YOUR MOMENT, KEPT.").size(9.0).color(MUTED));
-                ui.add_space(40.0);
-                for (page, label) in [
-                    (Page::Capture, "Capture"),
-                    (Page::Settings, "Settings"),
-                    (Page::About, "About"),
-                ] {
-                    ui.selectable_value(&mut self.page, page, label);
-                }
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(RichText::new("LOCAL BY DESIGN").size(10.0).color(MINT));
-                    ui.label(RichText::new("Veyva 0.1.0").small().color(MUTED));
+        self.titlebar(ctx);
+        let palette = Palette::for_theme(self.settings.theme);
+        if self.page == Page::Capture {
+            egui::SidePanel::right("inspector")
+                .exact_width(380.0)
+                .resizable(false)
+                .frame(
+                    egui::Frame::none()
+                        .fill(palette.background)
+                        .inner_margin(26.0)
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border)),
+                )
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
                 });
-            });
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(INK).inner_margin(32.0)).show(ctx, |ui| {
+        }
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(palette.background).inner_margin(30.0)).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.closing { banner(ui,"Finishing capture and closing safely...", MINT); }
+                if self.closing { banner(ui,"Finishing capture and closing safely...", palette.accent); }
                 if let Some(e) = self.load_error.clone() {
                     banner(ui,&format!("Settings could not be loaded: {e}"),CORAL);
                     if ui.button("Reset settings to defaults").clicked() {
                         let result = self.settings_path.as_ref().map_err(Clone::clone).and_then(|p| Settings::default().save(p));
-                        match result { Ok(()) => { self.settings = Settings::default(); self.load_error = None; self.error = None; self.pending_auto_start = true; }, Err(e) => self.error = Some(e) }
+                        match result { Ok(()) => { self.settings = Settings::default(); apply_theme(ctx, self.settings.theme); self.load_error = None; self.error = None; self.pending_auto_start = true; }, Err(e) => self.error = Some(e) }
                     }
                     ui.add_space(12.0);
                 }
@@ -599,30 +776,34 @@ impl eframe::App for App {
                     Page::Settings => self.settings(ui),
                     Page::About => {
                         ui.heading("Made for the moment.");
-                        ui.label(RichText::new("Veyva 0.1.0").color(MUTED));
+                        ui.label(RichText::new("Veyva 0.1.0").color(palette.muted));
                         ui.add_space(20.0);
                         card(ui, |ui| {
                             ui.label(RichText::new("Recording and replay, together.").size(22.0).strong());
                             ui.label("One hardware encoder powers normal recording and replay history. Replay arms when Veyva opens unless disabled in Preferences.");
                             ui.separator();
                             ui.label("System audio and configurable replay shortcuts are supported. Microphone capture and tray controls are not included.");
-                            ui.label(RichText::new("No account. No telemetry. No cloud upload.").color(MINT));
+                            ui.label(RichText::new("No account. No telemetry. No cloud upload.").color(palette.accent));
                         });
                     }
                 }
                 if let Some(e) = &self.error { banner(ui,e,CORAL); }
-                if let Some(n) = &self.notice { banner(ui,n,MINT); }
+                if let Some(n) = &self.notice { banner(ui,n,palette.accent); }
             });
         });
+        resize_edges(ctx);
     }
 }
 
 fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::none()
-        .fill(SLATE)
+        .fill(ui.visuals().window_fill)
         .rounding(12.0)
         .inner_margin(24.0)
-        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(39, 51, 66)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
         .show(ui, |ui| {
             ui.set_min_width((ui.available_width()).max(0.0_f32));
             contents(ui);
@@ -649,4 +830,72 @@ fn field(
     ui.label(name);
     ui.add(egui::DragValue::new(value).range(range).speed(speed));
     ui.end_row();
+}
+
+fn action(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    enabled: bool,
+    accent: Option<Palette>,
+) -> egui::Response {
+    let mut button = egui::Button::new(RichText::new(label).size(15.0))
+        .min_size(Vec2::new(width, 48.0))
+        .rounding(7.0);
+    if let Some(p) = accent {
+        button = egui::Button::new(RichText::new(label).size(15.0).color(p.accent_text))
+            .fill(p.accent)
+            .min_size(Vec2::new(width, 48.0))
+            .rounding(7.0);
+    }
+    ui.add_enabled(enabled, button)
+}
+
+fn readout(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.label(
+        RichText::new(label)
+            .small()
+            .color(ui.visuals().weak_text_color()),
+    );
+    egui::Frame::none()
+        .fill(ui.visuals().extreme_bg_color)
+        .rounding(5.0)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .inner_margin(10.0)
+        .show(ui, |ui| {
+            ui.set_min_width((ui.available_width() - 2.0).max(0.0));
+            ui.label(value);
+        });
+}
+
+fn resize_edges(ctx: &egui::Context) {
+    if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        return;
+    }
+    let rect = ctx.screen_rect();
+    let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
+    let left = pos.x < rect.left() + 5.0;
+    let right = pos.x > rect.right() - 5.0;
+    let top = pos.y < rect.top() + 5.0;
+    let bottom = pos.y > rect.bottom() - 5.0;
+    use egui::viewport::ResizeDirection as D;
+    let direction = match (left, right, top, bottom) {
+        (true, _, true, _) => Some((D::NorthWest, egui::CursorIcon::ResizeNwSe)),
+        (_, true, _, true) => Some((D::SouthEast, egui::CursorIcon::ResizeNwSe)),
+        (_, true, true, _) => Some((D::NorthEast, egui::CursorIcon::ResizeNeSw)),
+        (true, _, _, true) => Some((D::SouthWest, egui::CursorIcon::ResizeNeSw)),
+        (true, _, _, _) => Some((D::West, egui::CursorIcon::ResizeHorizontal)),
+        (_, true, _, _) => Some((D::East, egui::CursorIcon::ResizeHorizontal)),
+        (_, _, true, _) => Some((D::North, egui::CursorIcon::ResizeVertical)),
+        (_, _, _, true) => Some((D::South, egui::CursorIcon::ResizeVertical)),
+        _ => None,
+    };
+    if let Some((direction, cursor)) = direction {
+        ctx.set_cursor_icon(cursor);
+        if ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+        }
+    }
 }
