@@ -31,3 +31,5 @@ API references consulted:
 - https://learn.microsoft.com/en-us/windows/win32/medfound/mf-sa-d3d11-aware
 
 The newer MF_READWRITE_USE_ONLY_HARDWARE_TRANSFORMS sink-writer flag requires Windows 11 25H2. This implementation instead activates a hardware-only MFT explicitly and gives already-encoded H.264 to the MP4 writer, avoiding that newer OS requirement.
+
+The system-audio encoder setup is adapted from the same MIT reference audio module. WASAPI packet QPC positions are converted according to the Microsoft API contract (they are already in 100-nanosecond units): https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer . The native audio path and A/V muxer still need live validation on target hardware.

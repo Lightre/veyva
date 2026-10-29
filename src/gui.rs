@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const INK: Color32 = Color32::from_rgb(16, 21, 28);
-const SLATE: Color32 = Color32::from_rgb(26, 35, 48);
+const SLATE: Color32 = Color32::from_rgb(24, 34, 45);
 const MINT: Color32 = Color32::from_rgb(112, 226, 188);
-const MUTED: Color32 = Color32::from_rgb(169, 183, 198);
+const MUTED: Color32 = Color32::from_rgb(147, 165, 184);
 const CORAL: Color32 = Color32::from_rgb(255, 125, 135);
 
 pub fn run() -> Result<(), String> {
@@ -16,8 +16,8 @@ pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Veyva")
-            .with_inner_size([980.0, 700.0])
-            .with_min_inner_size([820.0, 620.0])
+            .with_inner_size([1080.0, 820.0])
+            .with_min_inner_size([860.0, 680.0])
             .with_icon(icon),
         ..Default::default()
     };
@@ -42,6 +42,10 @@ struct App {
     output: String,
     session: Option<Session>,
     closing: bool,
+    context: egui::Context,
+    hotkey: Option<crate::hotkey::Hotkey>,
+    shortcut_error: Option<String>,
+    pending_auto_start: bool,
 }
 
 impl App {
@@ -60,7 +64,7 @@ impl App {
         style.spacing.button_padding = Vec2::new(18.0, 11.0);
         style
             .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(30.0));
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(28.0));
         style
             .text_styles
             .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
@@ -93,6 +97,10 @@ impl App {
             output,
             session: None,
             closing: false,
+            context: cc.egui_ctx.clone(),
+            hotkey: None,
+            shortcut_error: None,
+            pending_auto_start: true,
         }
     }
 
@@ -106,7 +114,7 @@ impl App {
                 "Reset unreadable settings explicitly before saving or starting replay.".into(),
             );
         }
-        self.settings.profile.validate()?;
+        self.settings.validate()?;
         self.settings
             .save(self.settings_path.as_ref().map_err(Clone::clone)?)
     }
@@ -131,88 +139,178 @@ impl App {
         }
     }
 
-    fn save_replay(&mut self) {
-        let result = (|| {
-            if self.output.trim().is_empty() {
-                return Err("Choose an output folder first.".to_string());
-            }
-            let folder = PathBuf::from(self.output.trim());
-            if !folder.is_absolute() {
-                return Err("Use an absolute output folder path.".into());
-            }
-            std::fs::create_dir_all(&folder)
-                .map_err(|e| format!("Could not create output folder: {e}"))?;
-            let stamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_nanos();
-            let path = folder.join(format!("Veyva-replay-{stamp}-{}.mp4", std::process::id()));
-            if path.exists() {
-                return Err("Output filename already exists. Try saving again.".into());
-            }
-            Ok(path)
-        })();
-        match result {
-            Ok(path) => self.send(Command::SaveReplay(path)),
-            Err(e) => self.error = Some(e),
+    fn bind_hotkey(&mut self) {
+        self.hotkey = None;
+        self.shortcut_error = None;
+        let ctx = self.context.clone();
+        match crate::hotkey::Hotkey::register(
+            self.settings.hotkey_modifiers,
+            self.settings.hotkey_key,
+            std::sync::Arc::new(move || ctx.request_repaint()),
+        ) {
+            Ok(key) => self.hotkey = Some(key),
+            Err(error) => self.shortcut_error = Some(error),
         }
     }
-
-    fn capture(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Keep the moment.");
-        ui.label(RichText::new("A rolling replay buffer. Save only what matters.").color(MUTED));
-        ui.add_space(16.0);
-        let active = self.active();
-        let snapshot = self
+    fn output_path(&self, kind: &str) -> Result<PathBuf, String> {
+        let folder = PathBuf::from(self.output.trim());
+        if !folder.is_absolute() {
+            return Err("Choose an absolute output folder first".into());
+        }
+        std::fs::create_dir_all(&folder)
+            .map_err(|e| format!("Could not create output folder: {e}"))?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        Ok(folder.join(format!("Veyva-{kind}-{stamp}-{}.mp4", std::process::id())))
+    }
+    fn save_replay(&mut self) {
+        let ready = self
             .session
             .as_ref()
             .and_then(|s| s.status.lock().ok())
-            .map(|s| {
-                (
-                    s.phase.clone(),
-                    s.buffered_seconds,
-                    s.buffer_bytes,
-                    s.submitted,
-                    s.dropped,
-                    s.saving,
-                    s.last_saved.clone(),
-                    s.error.clone(),
-                )
-            });
-        let stopping = snapshot
+            .is_some_and(|s| s.replay_enabled && !s.saving && s.buffered_seconds > 0.0);
+        if !ready {
+            self.error = Some("Replay is disabled, still warming up, or already saving".into());
+            return;
+        }
+        match self.output_path("replay") {
+            Ok(path) => self.send(Command::SaveReplay(path)),
+            Err(error) => self.error = Some(error),
+        }
+    }
+    fn start_recording(&mut self) {
+        let path = match self.output_path("recording") {
+            Ok(path) => path,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        if !self.active() {
+            self.start();
+        }
+        if self.active() {
+            self.send(Command::StartRecording(path));
+        }
+    }
+    fn capture(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Capture");
+        ui.label(
+            RichText::new("Two ways to keep the moment. One shared capture engine.").color(MUTED),
+        );
+        ui.add_space(18.0);
+        let state = self
+            .session
             .as_ref()
-            .is_some_and(|s| s.0.starts_with("Stopping"));
+            .and_then(|s| s.status.lock().ok())
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        let active = self.active();
+        let stopping = state.phase.starts_with("Stopping");
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(if active {
-                        "REPLAY SESSION"
-                    } else {
-                        "REPLAY OFF"
-                    })
-                    .color(if active { MINT } else { MUTED })
-                    .strong()
-                    .size(12.0),
+                    RichText::new("NORMAL RECORDING")
+                        .small()
+                        .strong()
+                        .color(MUTED),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(
-                            snapshot
-                                .as_ref()
-                                .map(|s| s.0.as_str())
-                                .unwrap_or("Ready when you are"),
-                        )
-                        .color(MUTED),
+                    ui.colored_label(
+                        if state.recording { MINT } else { MUTED },
+                        if state.finalizing {
+                            "Finalizing file..."
+                        } else if state.paused {
+                            "Paused"
+                        } else if state.recording {
+                            "Recording"
+                        } else {
+                            "Ready"
+                        },
                     );
                 });
             });
-            ui.add_space(18.0);
-            let seconds = snapshot.as_ref().map(|s| s.1).unwrap_or(0.0);
+            let secs = state.recorded_seconds.max(0.0) as u64;
+            ui.label(
+                RichText::new(format!(
+                    "{:02}:{:02}:{:02}",
+                    secs / 3600,
+                    (secs / 60) % 60,
+                    secs % 60
+                ))
+                .size(42.0)
+                .strong(),
+            );
+            ui.label(
+                RichText::new(
+                    "Start, pause, resume, then finish and save. Replay stays independent.",
+                )
+                .color(MUTED),
+            );
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{seconds:.1}")).size(56.0).strong());
+                if ui
+                    .add_enabled(
+                        !state.recording
+                            && !state.finalizing
+                            && !stopping
+                            && !self.closing
+                            && self.load_error.is_none(),
+                        egui::Button::new(RichText::new("Start recording").color(INK)).fill(MINT),
+                    )
+                    .clicked()
+                {
+                    self.start_recording();
+                }
+                if ui
+                    .add_enabled(
+                        state.recording && !state.finalizing && !self.closing,
+                        egui::Button::new(if state.paused { "Resume" } else { "Pause" }),
+                    )
+                    .clicked()
+                {
+                    self.send(if state.paused {
+                        Command::ResumeRecording
+                    } else {
+                        Command::PauseRecording
+                    });
+                }
+                if ui
+                    .add_enabled(
+                        state.recording && !state.finalizing && !self.closing,
+                        egui::Button::new("Finish & save"),
+                    )
+                    .clicked()
+                {
+                    self.send(Command::FinishRecording);
+                }
+            });
+        });
+        ui.add_space(16.0);
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("INSTANT REPLAY")
+                        .small()
+                        .strong()
+                        .color(MUTED),
+                );
+                ui.colored_label(
+                    if state.replay_enabled { MINT } else { MUTED },
+                    if state.replay_enabled { "Armed" } else { "Off" },
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{:.1}s", state.buffered_seconds))
+                        .size(34.0)
+                        .strong(),
+                );
                 ui.label(
                     RichText::new(format!(
-                        "/ {} seconds",
+                        "of {} seconds configured history",
                         self.settings.profile.history_seconds
                     ))
                     .color(MUTED),
@@ -220,133 +318,142 @@ impl App {
             });
             ui.add(
                 egui::ProgressBar::new(
-                    (seconds / f64::from(self.settings.profile.history_seconds)).clamp(0.0, 1.0)
-                        as f32,
+                    (state.buffered_seconds / f64::from(self.settings.profile.history_seconds))
+                        .clamp(0.0, 1.0) as f32,
                 )
                 .fill(MINT)
-                .desired_height(5.0),
+                .desired_height(4.0),
             );
-            ui.add_space(8.0);
-            let (bytes, frames, dropped) = snapshot
-                .as_ref()
-                .map(|s| (s.2, s.3, s.4))
-                .unwrap_or_default();
             ui.horizontal(|ui| {
-                metric(
-                    ui,
-                    "ENCODED PAYLOAD",
-                    format!("{:.1} MiB", bytes as f64 / 1_048_576.0),
-                );
-                ui.separator();
-                metric(ui, "SUBMITTED FRAMES", frames.to_string());
-                ui.separator();
-                metric(ui, "DROPPED FRAMES", dropped.to_string());
-            });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if !active {
-                    if ui
-                        .add_enabled(
-                            self.load_error.is_none() && !self.closing,
-                            egui::Button::new(RichText::new("Start replay").color(INK)).fill(MINT),
-                        )
-                        .clicked()
-                    {
-                        self.start();
-                    }
-                } else if ui
-                    .add_enabled(!self.closing, egui::Button::new("Stop replay"))
-                    .clicked()
-                {
-                    self.send(Command::Stop);
-                }
-                let saving = snapshot.as_ref().is_some_and(|s| s.5);
                 if ui
                     .add_enabled(
-                        active && !stopping && seconds > 0.0 && !saving && !self.closing,
-                        egui::Button::new(if saving {
-                            "Saving replay...".to_string()
-                        } else {
-                            format!(
-                                "Save last {} seconds",
-                                self.settings.profile.history_seconds
-                            )
-                        }),
+                        active
+                            && state.replay_enabled
+                            && state.buffered_seconds > 0.0
+                            && !state.saving
+                            && !self.closing
+                            && !stopping,
+                        egui::Button::new(
+                            RichText::new(if state.saving {
+                                "Saving..."
+                            } else {
+                                "Save replay"
+                            })
+                            .color(INK),
+                        )
+                        .fill(MINT),
                     )
                     .clicked()
                 {
                     self.save_replay();
                 }
+                ui.label(
+                    RichText::new(crate::hotkey::label(
+                        self.settings.hotkey_modifiers,
+                        self.settings.hotkey_key,
+                    ))
+                    .color(MINT)
+                    .strong(),
+                );
+                if ui
+                    .add_enabled(
+                        !self.closing && !stopping,
+                        egui::Button::new(if state.replay_enabled {
+                            "Turn off replay"
+                        } else {
+                            "Turn on replay"
+                        }),
+                    )
+                    .clicked()
+                {
+                    if !active {
+                        self.start();
+                    }
+                    if self.active() {
+                        self.send(Command::SetReplayEnabled(!state.replay_enabled));
+                    }
+                }
             });
             ui.label(
-                RichText::new(
-                    "History starts fresh each session. Saving keeps the replay buffer running.",
-                )
+                RichText::new(format!(
+                    "{:.1} MiB encoded history / {} MiB budget   |   {} frames   |   {} skipped",
+                    state.buffer_bytes as f64 / 1_048_576.0,
+                    self.settings.profile.replay_budget_mib,
+                    state.submitted,
+                    state.dropped
+                ))
                 .small()
                 .color(MUTED),
             );
         });
-        ui.add_space(10.0);
-        card(ui, |ui| {
-            ui.label(
-                RichText::new("CAPTURE PROFILE")
-                    .small()
-                    .color(MUTED)
-                    .strong(),
+        ui.add_space(14.0);
+        let p = self.settings.profile;
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                if state.audio_active { MINT } else { MUTED },
+                if state.audio_active {
+                    "System audio: on"
+                } else if self.settings.audio_enabled && active {
+                    "System audio: unavailable / starting"
+                } else {
+                    "System audio: off"
+                },
             );
-            let p = self.settings.profile;
+            ui.separator();
             ui.label(
                 RichText::new(format!(
-                    "{} x {}   /   {} fps   /   {:.1} Mbps",
+                    "{} x {} / {} fps / {:.1} Mbps",
                     p.width,
                     p.height,
                     p.fps,
                     p.video_kbps as f64 / 1000.0
                 ))
-                .size(20.0),
-            );
-            ui.label(
-                RichText::new(format!(
-                    "Monitor {}  -  {} MiB history budget  -  Video only",
-                    self.settings.monitor, p.replay_budget_mib
-                ))
                 .color(MUTED),
             );
-            if ui.small_button("Edit capture settings").clicked() {
+            if ui.small_button("Preferences").clicked() {
                 self.page = Page::Settings;
             }
         });
-        ui.add_space(10.0);
+        if let Some(error) = state.audio_error {
+            banner(
+                ui,
+                &format!("System audio unavailable: {error}. Files may contain video only."),
+                CORAL,
+            );
+        }
+        ui.add_space(14.0);
         ui.label(RichText::new("SAVE LOCATION").small().strong().color(MUTED));
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.output)
-                    .desired_width((ui.available_width() - 132.0).max(100.0)),
+                    .desired_width((ui.available_width() - 120.0).max(100.0)),
             );
             if ui.button("Open folder").clicked() {
                 let path = PathBuf::from(self.output.trim());
                 if path.is_dir() {
-                    if let Err(e) = std::process::Command::new("explorer.exe").arg(path).spawn() {
-                        self.error = Some(format!("Could not open folder: {e}"));
+                    if let Err(error) = std::process::Command::new("explorer.exe").arg(path).spawn()
+                    {
+                        self.error = Some(error.to_string());
                     }
                 } else {
                     self.error = Some(
-                        "The output folder will be created when you save your first replay.".into(),
+                        "The folder is created when you start recording or save a replay".into(),
                     );
                 }
             }
         });
-        if let Some((_, _, _, _, _, _, saved, error)) = snapshot {
-            if let Some(e) = error {
-                banner(ui, &e, CORAL);
-            }
-            if let Some(p) = saved {
-                ui.label(
-                    RichText::new(format!("Saved: {}", p.display()))
-                        .small()
-                        .color(MINT),
-                );
-            }
+        if let Some(path) = state.last_saved {
+            ui.label(
+                RichText::new(format!("Saved: {}", path.display()))
+                    .small()
+                    .color(MINT),
+            );
+        }
+        if let Some(error) = state.error {
+            banner(ui, &error, CORAL);
+        }
+        if let Some(error) = &self.shortcut_error {
+            banner(ui, error, CORAL);
         }
     }
 
@@ -358,9 +465,20 @@ impl App {
         if active {
             banner(
                 ui,
-                "Stop replay to edit settings. Changes apply to a fresh buffer on next start.",
+                "Stop capture to edit settings. Replay history will be cleared.",
                 MINT,
             );
+            let busy = self
+                .session
+                .as_ref()
+                .and_then(|s| s.status.lock().ok())
+                .is_some_and(|s| s.recording || s.finalizing || s.saving);
+            if ui
+                .add_enabled(!busy, egui::Button::new("Stop capture to edit"))
+                .clicked()
+            {
+                self.send(Command::Stop);
+            }
         }
         ui.add_enabled_ui(!active && !self.closing && self.load_error.is_none(), |ui| {
             card(ui, |ui| {
@@ -386,9 +504,23 @@ impl App {
                 });
             });
             ui.add_space(8.0);
-            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. Audio capture is not available in this milestone.").small().color(MUTED));
+            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. System audio uses the default Windows output device. Microphone capture is not included.").small().color(MUTED));
+            card(ui, |ui| {
+                ui.checkbox(&mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
+                ui.checkbox(&mut self.settings.audio_enabled,"Record system audio");
+                ui.label(RichText::new("SAVE REPLAY SHORTCUT").small().strong().color(MUTED));
+                ui.horizontal(|ui|{
+                    for (flag,label) in [(1,"Alt"),(2,"Ctrl"),(4,"Shift"),(8,"Win")] {
+                        let mut enabled=self.settings.hotkey_modifiers&flag!=0;
+                        if ui.checkbox(&mut enabled,label).changed(){if enabled{self.settings.hotkey_modifiers|=flag;}else{self.settings.hotkey_modifiers&=!flag;}}
+                    }
+                    egui::ComboBox::from_id_salt("hotkey-key").selected_text(format!("F{}",self.settings.hotkey_key-0x70+1)).show_ui(ui,|ui|{
+                        for key in 0x70..=0x7B {ui.selectable_value(&mut self.settings.hotkey_key,key,format!("F{}",key-0x70+1));}
+                    });
+                });
+            });
             if ui.button("Save settings").clicked() {
-                match self.persist() { Ok(()) => { self.error = None; self.notice = Some("Settings saved. They apply on the next replay start.".into()); }, Err(e) => self.error = Some(e) }
+                match self.persist() { Ok(()) => { self.bind_hotkey(); self.error = None; self.notice = Some("Settings saved. A new session uses the updated settings.".into()); if self.settings.replay_auto_start {self.start();} }, Err(e) => self.error = Some(e) }
             }
         });
     }
@@ -396,6 +528,23 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.pending_auto_start {
+            self.pending_auto_start = false;
+            if self.load_error.is_none() {
+                self.bind_hotkey();
+                if self.settings.replay_auto_start {
+                    self.start();
+                }
+            }
+        }
+        if self
+            .hotkey
+            .as_ref()
+            .is_some_and(|hotkey| hotkey.take_pressed())
+            && !self.closing
+        {
+            self.save_replay();
+        }
         if ctx.input(|i| i.viewport().close_requested()) && self.active() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if !self.closing {
@@ -441,7 +590,7 @@ impl eframe::App for App {
                     banner(ui,&format!("Settings could not be loaded: {e}"),CORAL);
                     if ui.button("Reset settings to defaults").clicked() {
                         let result = self.settings_path.as_ref().map_err(Clone::clone).and_then(|p| Settings::default().save(p));
-                        match result { Ok(()) => { self.settings = Settings::default(); self.load_error = None; self.error = None; }, Err(e) => self.error = Some(e) }
+                        match result { Ok(()) => { self.settings = Settings::default(); self.load_error = None; self.error = None; self.pending_auto_start = true; }, Err(e) => self.error = Some(e) }
                     }
                     ui.add_space(12.0);
                 }
@@ -450,13 +599,13 @@ impl eframe::App for App {
                     Page::Settings => self.settings(ui),
                     Page::About => {
                         ui.heading("Made for the moment.");
-                        ui.label(RichText::new("Veyva 0.1.0 - First milestone").color(MUTED));
+                        ui.label(RichText::new("Veyva 0.1.0").color(MUTED));
                         ui.add_space(20.0);
                         card(ui, |ui| {
-                            ui.label(RichText::new("A small, local replay recorder.").size(22.0).strong());
-                            ui.label("Desktop capture and H.264 encoding run in the background only after you start replay. Save the recent buffer to an MP4 on your computer.");
+                            ui.label(RichText::new("Recording and replay, together.").size(22.0).strong());
+                            ui.label("One hardware encoder powers normal recording and replay history. Replay arms when Veyva opens unless disabled in Preferences.");
                             ui.separator();
-                            ui.label("This milestone captures video only. Audio, hotkeys and tray controls are not available. Timed recording remains available through the command line.");
+                            ui.label("System audio and configurable replay shortcuts are supported. Microphone capture and tray controls are not included.");
                             ui.label(RichText::new("No account. No telemetry. No cloud upload.").color(MINT));
                         });
                     }
@@ -472,19 +621,12 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::none()
         .fill(SLATE)
         .rounding(12.0)
-        .inner_margin(22.0)
+        .inner_margin(24.0)
         .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(39, 51, 66)))
         .show(ui, |ui| {
             ui.set_min_width((ui.available_width()).max(0.0_f32));
             contents(ui);
         });
-}
-
-fn metric(ui: &mut egui::Ui, label: &str, value: String) {
-    ui.vertical(|ui| {
-        ui.label(RichText::new(label).size(10.0).color(MUTED));
-        ui.label(RichText::new(value).size(20.0));
-    });
 }
 
 fn banner(ui: &mut egui::Ui, text: &str, color: Color32) {

@@ -61,3 +61,9 @@ Added a validated, versioned settings model shared by the CLI and native capture
 The native GUI and continuous replay backend pass the integrated offline compile and Clippy check with warnings denied. Three standalone History tests passed for GOP-aligned byte eviction, time/short-history/snapshot retention, and oversized-GOP rejection. The complete GUI-linked test suite was not run because the first dependency code generation is lengthy; a release build is delegated to the user. No new GUI or continuous replay capture was launched by the agent.
 
 Manual acceptance is in `docs/MANUAL-TEST.md`. Prior CLI playback, memory and CPU measurements do not verify the new GUI/replay behavior. Audio, global shortcuts, tray and unlimited manual recording remain unavailable.
+
+## Dual-flow source checks
+
+Added independent normal recording and replay commands sharing a capture encoder, a bounded recording writer, system audio loopback/AAC and configurable replay hotkeys. Ten fast isolated tests passed: five settings/persistence/migration cases and five A/V history/pause-clock cases. The complete integrated application passes incremental compile and Clippy checks. A release build, actual hotkey registration, native window visual QA, real audio playback/synchronization, pause/resume export playback, and concurrent recording/replay runtime behavior have not been exercised by the agent.
+
+The Figma Capture frame and the separate recording/replay panel screenshots were inspected. This verifies the design artifact, not the native rendered UI. Prior silent CLI recordings do not verify the new A/V path. No screen or system-audio capture was launched for this change.

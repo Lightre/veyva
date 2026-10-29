@@ -6,11 +6,11 @@ A local Windows replay recorder designed around hardware H.264 encoding and boun
 
 ## Desktop interface
 
-Run `veyva.exe` or `veyva.exe gui`. The application opens with replay off. Capture shows actual retained history, encoded payload, submitted frames, dropped frames, and session/export errors. Start replay explicitly, wait for history, then save a clip to the selected output folder. Saving runs on a separate worker while capture continues. Stop replay before editing capture settings; the next session starts with empty history.
+Run `veyva.exe` or `veyva.exe gui`. The application arms replay on startup by default; this is configurable in Preferences. Capture shows actual retained history, encoded payload, submitted frames, dropped frames, and session/export errors. Wait for history, then save by button or the configured global shortcut (Alt+F1 by default). Normal recording has separate Start, Pause/Resume, and Finish & Save controls. Saving runs on a separate worker while capture continues. Stop capture from Preferences before editing the profile; the next session starts with empty history.
 
 The interface uses an ink/mint theme, the Veyva icon, Capture/Settings/About navigation, profile presets and custom settings. Idle rendering is event-driven; an active session refreshes status at most about four times per second. There is no live video preview.
 
-This milestone captures **silent video**. Audio, tray, global shortcuts, and unlimited manual recording are not implemented. The existing 1-60 second recording command remains available. Closing the window requests stop and waits asynchronously for any export; forced termination or OS shutdown can still interrupt an export.
+The desktop supports system audio from the default Windows output device. Microphone and tray controls are not implemented. The existing 1-60 second `record` CLI remains a silent diagnostic path. Normal GUI recording streams to disk without that duration limit. Closing the window requests stop and waits asynchronously for any export/recording finalization; forced termination or OS shutdown can still interrupt a file.
 
 ## Build and checks
 
@@ -39,7 +39,7 @@ Settings live at `%LOCALAPPDATA%\Veyva\settings.conf`. A missing file uses Low E
 .\target\release\veyva.exe record --seconds 10 --output "$env:TEMP\veyva-custom-01.mp4" --width 1280 --height 720 --fps 30 --video-kbps 4000
 ```
 
-Supported saved keys: `width`, `height`, `fps`, `video_kbps`, `history_seconds`, `replay_budget_mib`, and `monitor`. Presets: `low`, `balanced`, `high`. Record overrides are temporary. GUI output folder selection is currently session-local, defaulting to `%USERPROFILE%\Videos\Veyva`.
+Supported saved keys: `width`, `height`, `fps`, `video_kbps`, `history_seconds`, `replay_budget_mib`, `monitor`, `replay_auto_start`, `audio_enabled`, `hotkey_modifiers`, and `hotkey_key`. Presets: `low`, `balanced`, `high`. Record overrides are temporary. GUI output folder selection is currently session-local, defaulting to `%USERPROFILE%\Videos\Veyva`.
 
 Ranges: even widths 320-7680; even heights 180-4320; FPS 1-240; video bitrate 250-100000 kbps; history 5-600 seconds; encoded payload budget 16-512 MiB. The history budget is a limit, not a guarantee of the requested duration. Actual retained seconds can be shorter because of bitrate bursts, keyframe alignment or insufficient memory.
 
@@ -64,3 +64,18 @@ Logs: `%LOCALAPPDATA%\Veyva\veyva.log`, rotated at startup after 1 MiB. CLI meas
 - `docs/BRAND.md`, `docs/PLAN.md`, `docs/VALIDATION.md`: identity, remaining work and evidence.
 
 Selected capture/conversion and MFT negotiation were adapted from the supplied ClipFlow revision. MIT notices remain in source and `docs/CLIPFLOW-LICENSE.txt`. Original Veyva code has no public distribution license selected yet.
+
+## Normal recording, automatic replay and system audio
+
+The desktop capture screen now has two independent flows:
+
+- Normal recording: Start recording, Pause, Resume, Finish & save. The file is streamed to a bounded disk worker, so recording duration is not limited by the replay-history budget or the old 60-second diagnostic CLI limit. Pauses are removed from the saved timeline. Start/resume wait for a decodable video keyframe; an encoder may delay this until its next keyframe.
+- Replay: armed automatically on application launch by default, with the selected history duration and memory budget. Save Replay or the configured global shortcut exports the available history while buffering continues. Default shortcut: Alt+F1. Replay can be turned off independently of a normal recording.
+
+Both consume the same hardware video encoder. Normal recording has a bounded 64-packet queue plus a byte budget; a disk that cannot keep up produces a visible recording failure rather than unbounded queue growth. When neither flow needs video, the GPU capture path is skipped. The audio worker may remain initialized while the session is ready.
+
+System audio captures the default Windows render endpoint through WASAPI, converts to 48 kHz stereo PCM, and encodes AAC at 128 kbps. Audio is included in new desktop replay/normal MP4 exports when available. Initialization/runtime audio failures are shown explicitly; affected files may be video-only. Microphone capture is not included. The timed `record` CLI remains a silent diagnostic path.
+
+Settings format version 2 adds `replay_auto_start`, `audio_enabled`, `hotkey_modifiers`, and `hotkey_key`. Boolean CLI values are 0/1. Existing version-1 settings migrate with replay and audio enabled and Alt+F1 selected. Settings editing requires stopping the capture engine; ongoing recordings/exports must finish first.
+
+Figma design and native implementation notes: `docs/DESIGN.md`. New behavior supersedes the older first-milestone limitations described above.

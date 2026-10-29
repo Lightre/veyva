@@ -11,10 +11,23 @@ use std::{
 };
 
 pub enum Command {
+    StartRecording(PathBuf),
+    PauseRecording,
+    ResumeRecording,
+    FinishRecording,
+    SetReplayEnabled(bool),
     SaveReplay(PathBuf),
     Stop,
 }
+#[derive(Clone)]
 pub struct Status {
+    pub recording: bool,
+    pub paused: bool,
+    pub recorded_seconds: f64,
+    pub finalizing: bool,
+    pub replay_enabled: bool,
+    pub audio_active: bool,
+    pub audio_error: Option<String>,
     pub phase: String,
     pub buffered_seconds: f64,
     pub buffer_bytes: u64,
@@ -27,6 +40,13 @@ pub struct Status {
 impl Default for Status {
     fn default() -> Self {
         Self {
+            recording: false,
+            paused: false,
+            recorded_seconds: 0.0,
+            finalizing: false,
+            replay_enabled: false,
+            audio_active: false,
+            audio_error: None,
             phase: "Idle".into(),
             buffered_seconds: 0.0,
             buffer_bytes: 0,
@@ -105,7 +125,7 @@ pub fn start(settings: Settings) -> Result<Session, String> {
             let _active = active;
             let result = (|| -> crate::capture::RResult<()> {
                 let (mut log, _) = crate::diagnostics::Logger::open()?;
-                log.write(&format!("Replay session starting: monitor={}, {}x{} at {} FPS; silent H.264; history_seconds={}; payload_budget_mib={}", settings.monitor, settings.profile.width, settings.profile.height, settings.profile.fps, settings.profile.history_seconds, settings.profile.replay_budget_mib))?;
+                log.write(&format!("Capture session starting: monitor={}, {}x{} at {} FPS; H.264; audio_requested={}; history_seconds={}; payload_budget_mib={}", settings.monitor, settings.profile.width, settings.profile.height, settings.profile.fps, settings.audio_enabled, settings.profile.history_seconds, settings.profile.replay_budget_mib))?;
                 let result = crate::capture::continuous(settings, receiver, stopping, shared.clone());
                 match &result {
                     Ok(()) => { log.write("Replay session stopped")?; }
@@ -128,8 +148,14 @@ pub fn start(settings: Settings) -> Result<Session, String> {
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Track {
+    Video,
+    Audio,
+}
 #[derive(Clone)]
 pub(crate) struct Packet {
+    pub track: Track,
     pub data: Arc<[u8]>,
     pub time: i64,
     pub duration: i64,
@@ -140,6 +166,7 @@ pub(crate) struct History {
     pub bytes: u64,
     byte_limit: u64,
     time_limit: i64,
+    newest_video_end: i64,
 }
 impl History {
     pub fn new(bytes: u64, seconds: u32) -> Self {
@@ -148,11 +175,17 @@ impl History {
             bytes: 0,
             byte_limit: bytes,
             time_limit: i64::from(seconds) * 10_000_000,
+            newest_video_end: 0,
         }
     }
     pub fn push(&mut self, packet: Packet) {
-        if self.packets.is_empty() && !packet.keyframe {
+        if self.packets.is_empty() && !(matches!(packet.track, Track::Video) && packet.keyframe) {
             return;
+        }
+        if matches!(packet.track, Track::Video) {
+            self.newest_video_end = self
+                .newest_video_end
+                .max(packet.time.saturating_add(packet.duration));
         }
         self.bytes += packet.data.len() as u64;
         self.packets.push_back(packet);
@@ -165,7 +198,11 @@ impl History {
             } else {
                 break;
             }
-            while self.packets.front().is_some_and(|p| !p.keyframe) {
+            while self
+                .packets
+                .front()
+                .is_some_and(|p| !(matches!(p.track, Track::Video) && p.keyframe))
+            {
                 self.bytes -= self.packets.pop_front().unwrap().data.len() as u64;
             }
         }
@@ -173,16 +210,57 @@ impl History {
     fn span(&self) -> i64 {
         self.packets
             .front()
-            .zip(self.packets.back())
-            .map_or(0, |(a, b)| {
-                b.time.saturating_add(b.duration).saturating_sub(a.time)
-            })
+            .map_or(0, |first| self.newest_video_end.saturating_sub(first.time))
     }
     pub fn seconds(&self) -> f64 {
         self.span() as f64 / 10_000_000.0
     }
     pub fn snapshot(&self) -> Vec<Packet> {
-        self.packets.iter().cloned().collect()
+        let base = self.packets.front().map_or(0, |p| p.time);
+        self.packets
+            .iter()
+            .filter(|p| p.time >= base)
+            .cloned()
+            .collect()
+    }
+}
+/// Rebase complete recording segments onto one timeline; replay is unaffected.
+#[derive(Default)]
+pub(crate) struct RecordingClock {
+    paused: bool,
+    segment_start: Option<i64>,
+    output_start: i64,
+    pub end: i64,
+}
+impl RecordingClock {
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+    pub fn resume(&mut self) {
+        self.paused = false;
+        self.segment_start = None;
+    }
+    pub fn map(&mut self, packet: &Packet) -> Option<i64> {
+        if self.paused {
+            return None;
+        }
+        if self.segment_start.is_none() {
+            if packet.track != Track::Video || !packet.keyframe {
+                return None;
+            }
+            self.segment_start = Some(packet.time);
+            self.output_start = self.end;
+        }
+        let start = self.segment_start.unwrap();
+        if packet.time < start {
+            return None;
+        }
+        let mapped = packet.time - start + self.output_start;
+        self.end = self.end.max(mapped.saturating_add(packet.duration));
+        Some(mapped)
     }
 }
 #[cfg(test)]
@@ -190,11 +268,42 @@ mod tests {
     use super::*;
     fn packet(n: i64, keyframe: bool) -> Packet {
         Packet {
+            track: Track::Video,
             data: Arc::from([1u8; 4]),
             time: n * 10_000_000,
             duration: 10_000_000,
             keyframe,
         }
+    }
+    #[test]
+    fn recording_pause_removes_gap_and_waits_for_keyframe() {
+        let mut clock = RecordingClock::default();
+        assert_eq!(clock.map(&packet(4, false)), None);
+        assert_eq!(clock.map(&packet(5, true)), Some(0));
+        clock.pause();
+        assert_eq!(clock.map(&packet(6, true)), None);
+        clock.resume();
+        assert_eq!(clock.map(&packet(20, false)), None);
+        assert_eq!(clock.map(&packet(21, true)), Some(10_000_000));
+        let mut audio = packet(21, true);
+        audio.track = Track::Audio;
+        assert_eq!(clock.map(&audio), Some(10_000_000));
+    }
+    #[test]
+    fn audio_respects_history_budget_and_snapshot_start() {
+        let mut history = History::new(20, 3);
+        for n in 0..8 {
+            history.push(packet(n, n % 2 == 0));
+            let mut audio = packet(n, false);
+            audio.track = Track::Audio;
+            history.push(audio);
+            assert!(history.bytes <= 20);
+        }
+        let snapshot = history.snapshot();
+        assert!(snapshot
+            .first()
+            .is_some_and(|p| p.track == Track::Video && p.keyframe));
+        assert!(snapshot.iter().all(|p| p.time >= snapshot[0].time));
     }
     #[test]
     fn eviction_preserves_keyframes_and_byte_budget() {

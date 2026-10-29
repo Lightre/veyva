@@ -41,3 +41,9 @@ The source now includes an explicit-start native eframe interface and continuous
 Obsolete one-off scaffolding scripts were archived under ignored `work/archive/scaffolding/`; the obsolete `target/release/veyra.exe` was removed. Private MP4 recordings, measurement CSV/JSON and prior validation evidence were preserved. `assets/theme.css` remains design reference data, not an additional UI runtime.
 
 The initial GUI source/check does not establish visual acceptance or runtime capture correctness. The next user validation must include idle/start/stop, repeated replay saves, playback/seeking, buffer limits, settings persistence, and closing while saving. GUI process memory and gameplay performance must be measured separately from earlier CLI runs.
+
+## Shared recording/replay implementation
+
+The corrected application model now shares one hardware encoder between normal recording and automatic replay. Normal recording uses Start/Pause/Resume/Finish with an independent bounded streaming writer; replay has an independent enable state and snapshot exporter. The GUI defaults to replay-on at launch and provides configurable Alt+F1 replay saving. System audio capture and AAC pass-through muxing are implemented for both GUI flows; microphone capture and tray remain future work.
+
+The design reference is editable in Figma; see `DESIGN.md`. The timed CLI still serves as a silent diagnostic path. Next acceptance focuses on simultaneous replay+recording, pause-gap removal, audio/video sync, hotkey conflicts, stream finalization, and memory under long recordings.

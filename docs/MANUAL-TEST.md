@@ -1,14 +1,12 @@
-# Desktop replay manual checks
+# Desktop recording and replay manual checks
 
-Build once with `cargo build --release --offline`, then run `target\release\veyva.exe gui`.
+Build with `cargo build --release --offline`, then run `target\release\veyva.exe gui`.
 
-1. Confirm replay is off at startup; the ink/mint window, V icon and readable controls appear. Resize to minimum size and check scrolling, labels and settings access.
-2. Start replay. Wait 10 seconds; buffered duration and payload should rise while the window remains responsive. Confirm the displayed profile matches saved settings.
-3. Save replay. Capture should continue while saving. Open the output folder and play the MP4, seek in it, and confirm its duration matches available history. Audio is intentionally absent.
-4. Save again; files must have different names. A second save during an active export must be disabled or rejected clearly.
-5. Stop replay, change FPS/bitrate/history/budget in Settings, save, restart the app and check persistence. Start a new session; history must begin empty.
-6. Set a small history budget and run beyond the configured history duration. Payload must stay capped; displayed duration may be shorter than requested. Process memory includes GPU/GUI/export overhead beyond that budget.
-7. Close during an export. The app should indicate stopping and remain responsive until export completes, then close.
-8. With replay stopped and the window untouched, inspect Task Manager. Report unexpectedly high idle CPU/GPU use. For a running session, compare to the earlier CLI measurements only as separate observations, not equivalent benchmark runs.
-
-If capture or save fails, preserve `%LOCALAPPDATA%\Veyva\veyva.log`, the visible error and relevant profile values. Do not delete a partial MP4 before reporting it. Do not assume an untested high-resolution/high-FPS profile is supported by the encoder.
+1. Build the new release and open the GUI. Replay must arm automatically with the configured history. Preferences can disable this startup behavior.
+2. Play ordinary audible content through the default Windows output device. Confirm System audio is on; otherwise report the visible audio error.
+3. Start normal recording, wait five seconds, Pause, wait five seconds, Resume, record another five seconds, then Finish & save. The saved duration should be about ten seconds plus keyframe/packet boundary effects, not fifteen. Confirm audible content and A/V alignment.
+4. While normal recording is running or paused, save replay by button and by Alt+F1 from another foreground application. Replay must continue independently; files should include recent history, not just normal-recording segments.
+5. Disable replay and continue normal recording. Finish it; both idle/paused flows should avoid GPU capture work. Turn replay back on and check history starts fresh.
+6. In Preferences, stop capture using the explicit action after recording/export completes. Change shortcut modifiers/function key and save. Test the new shortcut and a known occupied shortcut; conflicts must be visible.
+7. Close during a normal recording or replay export. The window should show stopping and close after finalization. Verify saved files can be played and seeked. Forced OS/process termination is not covered by graceful close.
+8. Report audio errors, drift, silent files, pause gaps or missing final clips with the corresponding Veyva log. Microphone and the timed CLI audio are intentionally outside this implementation.

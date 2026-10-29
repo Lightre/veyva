@@ -139,15 +139,14 @@ struct VideoFormatHeader {
     sequence_header: Vec<u8>,
 }
 
-/// Capture and encoding stay on this COM apartment. Only owned encoded bytes
-/// enter the exporter, whose Media Foundation objects are created on its thread.
+/// One shared hardware encoder feeds independent replay and normal recording.
 pub(super) fn continuous(
     settings: crate::settings::Settings,
     commands: std::sync::mpsc::Receiver<crate::session::Command>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     status: std::sync::Arc<std::sync::Mutex<crate::session::Status>>,
 ) -> RResult<()> {
-    use crate::session::{Command, History, Packet};
+    use crate::session::{Command, History, Packet, Track};
     use std::sync::atomic::Ordering;
     let _mf = MfSession::new()?;
     let profile = settings.profile;
@@ -177,6 +176,20 @@ pub(super) fn continuous(
         bytes: 0,
         limit: budget,
     };
+
+    let origin = Instant::now();
+    let mut audio = if settings.audio_enabled {
+        match crate::audio::AudioCapture::start(origin) {
+            Ok(audio) => Some(audio),
+            Err(error) => {
+                status.lock().unwrap_or_else(|e| e.into_inner()).audio_error = Some(error);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut replay_enabled = settings.replay_auto_start;
     struct ExportGuard(Option<std::thread::JoinHandle<()>>);
     impl Drop for ExportGuard {
         fn drop(&mut self) {
@@ -186,18 +199,24 @@ pub(super) fn continuous(
         }
     }
     let mut export = ExportGuard(None);
+    let mut recording: Option<RecordingPipe> = None;
     let interval = Duration::from_secs_f64(1.0 / f64::from(profile.fps));
-    let mut deadline = Instant::now();
+    let mut deadline = origin;
     let mut timer = FrameTimer::new().ok();
     let mut slot = 0u64;
     let mut submitted = 0u64;
     let mut dropped = 0u64;
     let mut have_frame = false;
     let mut last_packet_time = None;
-    status.lock().unwrap_or_else(|e| e.into_inner()).phase = "Buffering (silent video)".into();
     while !stop.load(Ordering::Acquire) {
         if export.0.as_ref().is_some_and(|worker| worker.is_finished()) {
             let _ = export.0.take().unwrap().join();
+        }
+        if recording
+            .as_ref()
+            .is_some_and(|writer| writer.worker.as_ref().is_none_or(|w| w.is_finished()))
+        {
+            recording = None;
         }
         for _ in 0..4 {
             let command = match commands.try_recv() {
@@ -205,40 +224,72 @@ pub(super) fn continuous(
                 Err(_) => break,
             };
             match command {
-                Command::Stop => {
-                    stop.store(true, Ordering::Release);
+                Command::Stop => stop.store(true, Ordering::Release),
+                Command::SetReplayEnabled(enabled) => {
+                    replay_enabled = enabled;
+                    history = History::new(budget, profile.history_seconds);
+                }
+                Command::StartRecording(path) => {
+                    if recording.is_some() {
+                        status.lock().unwrap_or_else(|e| e.into_inner()).error =
+                            Some("Finish the current recording first".into());
+                        continue;
+                    }
+                    refresh_header(&mut encoder)?;
+                    match RecordingPipe::start(
+                        path,
+                        encoder.header.clone(),
+                        audio.is_some(),
+                        status.clone(),
+                        budget,
+                    ) {
+                        Ok(writer) => recording = Some(writer),
+                        Err(error) => {
+                            status.lock().unwrap_or_else(|e| e.into_inner()).error =
+                                Some(error.to_string())
+                        }
+                    }
+                }
+                Command::PauseRecording => {
+                    if let Some(writer) = recording.as_mut() {
+                        writer.clock.pause();
+                        status.lock().unwrap_or_else(|e| e.into_inner()).paused = true;
+                    }
+                }
+                Command::ResumeRecording => {
+                    if let Some(writer) = recording.as_mut() {
+                        writer.clock.resume();
+                        status.lock().unwrap_or_else(|e| e.into_inner()).paused = false;
+                    }
+                }
+                Command::FinishRecording => {
+                    if let Some(writer) = recording.as_mut() {
+                        writer.finish();
+                    }
                 }
                 Command::SaveReplay(path) => {
+                    if !replay_enabled {
+                        status.lock().unwrap_or_else(|e| e.into_inner()).error =
+                            Some("Replay is disabled".into());
+                        continue;
+                    }
                     if export.0.is_some() {
                         status.lock().unwrap_or_else(|e| e.into_inner()).error =
                             Some("A replay export is already in progress".into());
                         continue;
                     }
                     let snapshot = history.snapshot();
-                    if snapshot.len() < 2 {
+                    if snapshot
+                        .iter()
+                        .filter(|p| matches!(p.track, Track::Video))
+                        .count()
+                        < 2
+                    {
                         status.lock().unwrap_or_else(|e| e.into_inner()).error =
-                            Some("Not enough keyframe-aligned history yet".into());
+                            Some("Waiting for decodable replay history".into());
                         continue;
                     }
-                    // Refresh the codec header after the encoder has emitted output.
-                    unsafe {
-                        let media_type = encoder.transform.GetOutputCurrentType(0).map_err(hr)?;
-                        if let Ok(size) = media_type.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) {
-                            if size > 1024 * 1024 {
-                                return Err(RecorderError::Other(
-                                    "Invalid codec header size".into(),
-                                ));
-                            }
-                            encoder.header.sequence_header.resize(size as usize, 0);
-                            media_type
-                                .GetBlob(
-                                    &MF_MT_MPEG_SEQUENCE_HEADER,
-                                    &mut encoder.header.sequence_header,
-                                    None,
-                                )
-                                .map_err(hr)?;
-                        }
-                    }
+                    refresh_header(&mut encoder)?;
                     let header = encoder.header.clone();
                     let shared = status.clone();
                     {
@@ -266,6 +317,29 @@ pub(super) fn continuous(
         if stop.load(Ordering::Acquire) {
             break;
         }
+        // Do not run the GPU pipeline when neither flow consumes video.
+        if !replay_enabled
+            && recording
+                .as_ref()
+                .is_none_or(|writer| writer.sender.is_none() || writer.clock.is_paused())
+        {
+            if let Some(capture) = audio.as_mut() {
+                drop(capture.drain());
+            }
+            {
+                let mut state = status.lock().unwrap_or_else(|e| e.into_inner());
+                state.phase = "Ready".into();
+                state.replay_enabled = false;
+                state.buffered_seconds = 0.0;
+                state.buffer_bytes = 0;
+                state.audio_active = audio.is_some();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            slot = (origin.elapsed().as_nanos() * u128::from(profile.fps) / 1_000_000_000)
+                .min(u64::MAX as u128) as u64;
+            deadline = Instant::now();
+            continue;
+        }
         if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
             if !timer
                 .as_ref()
@@ -277,21 +351,22 @@ pub(super) fn continuous(
                 }
             }
         }
-        let late = Instant::now()
+        let skipped = (Instant::now()
             .saturating_duration_since(deadline)
             .as_nanos()
-            / interval.as_nanos();
-        let skipped = late.min(u64::MAX as u128) as u64;
+            / interval.as_nanos())
+        .min(u64::MAX as u128) as u64;
         slot = slot.saturating_add(skipped);
         dropped = dropped.saturating_add(skipped);
         deadline += interval.mul_f64((skipped + 1) as f64);
         encoder.drain(&mut packets)?;
+        let mut fresh = Vec::with_capacity(packets.samples.len() + 8);
         unsafe {
             for sample in packets.samples.drain(..) {
                 let time = sample.GetSampleTime().map_err(hr)?;
                 if last_packet_time.is_some_and(|previous| previous >= time) {
                     return Err(RecorderError::Other(
-                        "Encoder produced reordered timestamps; B frames are unsupported".into(),
+                        "Encoder produced reordered timestamps".into(),
                     ));
                 }
                 last_packet_time = Some(time);
@@ -306,7 +381,8 @@ pub(super) fn continuous(
                     length as usize,
                 ));
                 buffer.Unlock().map_err(hr)?;
-                history.push(Packet {
+                fresh.push(Packet {
+                    track: Track::Video,
                     data,
                     time,
                     duration: sample.GetSampleDuration().map_err(hr)?,
@@ -364,17 +440,74 @@ pub(super) fn continuous(
                 dropped += 1;
             }
         }
+
         slot += 1;
+        if let Some(capture) = audio.as_mut() {
+            for packet in capture.drain() {
+                fresh.push(Packet {
+                    track: Track::Audio,
+                    data: packet.data,
+                    time: packet.time,
+                    duration: packet.duration,
+                    keyframe: true,
+                });
+            }
+            if let Some(error) = capture.error() {
+                status.lock().unwrap_or_else(|e| e.into_inner()).audio_error = Some(error);
+                audio = None;
+            }
+        }
+        // A/V packets can arrive in different batches. Keep each track monotonic;
+        // replay snapshots filter audio to their oldest retained video keyframe.
+        fresh.sort_by_key(|p| p.time);
+        for packet in fresh {
+            if let Some(writer) = recording.as_mut() {
+                writer.push(packet.clone());
+            }
+            if replay_enabled {
+                history.push(packet);
+            }
+        }
         let mut state = status.lock().unwrap_or_else(|e| e.into_inner());
+        state.phase = if replay_enabled {
+            "Replay armed"
+        } else {
+            "Capture ready"
+        }
+        .into();
+        state.replay_enabled = replay_enabled;
+        state.audio_active = audio.is_some();
         state.buffered_seconds = history.seconds();
         state.buffer_bytes = history.bytes;
         state.submitted = submitted;
         state.dropped = dropped;
     }
-    status.lock().unwrap_or_else(|e| e.into_inner()).phase = "Stopping".into();
-    // ExportGuard waits here or during error unwinding, on the capture thread.
-    // The GUI never joins an unfinished capture worker.
+    status.lock().unwrap_or_else(|e| e.into_inner()).phase = "Stopping / finishing files".into();
+    // Workers finalize on this capture worker, never blocking the UI thread.
+    drop(recording);
+    drop(export);
+    drop(audio);
     Ok(())
+}
+
+fn refresh_header(encoder: &mut HardwareEncoder) -> RResult<()> {
+    unsafe {
+        let media_type = encoder.transform.GetOutputCurrentType(0).map_err(hr)?;
+        if let Ok(size) = media_type.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) {
+            if size > 1024 * 1024 {
+                return Err(RecorderError::Other("Invalid codec header size".into()));
+            }
+            encoder.header.sequence_header.resize(size as usize, 0);
+            media_type
+                .GetBlob(
+                    &MF_MT_MPEG_SEQUENCE_HEADER,
+                    &mut encoder.header.sequence_header,
+                    None,
+                )
+                .map_err(hr)?;
+        }
+        Ok(())
+    }
 }
 
 fn export_snapshot(
@@ -382,49 +515,66 @@ fn export_snapshot(
     header: &VideoFormatHeader,
     snapshot: Vec<crate::session::Packet>,
 ) -> RResult<()> {
+    use crate::session::Track;
     let _mf = MfSession::new()?;
-    let temporary = path.with_extension("partial.mp4");
-    if path.exists() {
-        return Err(RecorderError::Other("Output file already exists".into()));
-    }
-    let reservation = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    drop(reservation);
-    let result = (|| {
-        let mut packets = Packets {
-            samples: Vec::with_capacity(snapshot.len()),
-            bytes: 0,
-            limit: u64::MAX,
-        };
-        unsafe {
-            for packet in snapshot {
-                let sample = MFCreateSample().map_err(hr)?;
-                let buffer = MFCreateMemoryBuffer(packet.data.len() as u32).map_err(hr)?;
-                let mut pointer = std::ptr::null_mut();
-                buffer.Lock(&mut pointer, None, None).map_err(hr)?;
-                std::ptr::copy_nonoverlapping(packet.data.as_ptr(), pointer, packet.data.len());
-                buffer.Unlock().map_err(hr)?;
-                buffer
-                    .SetCurrentLength(packet.data.len() as u32)
-                    .map_err(hr)?;
-                sample.AddBuffer(&buffer).map_err(hr)?;
-                sample.SetSampleTime(packet.time).map_err(hr)?;
-                sample.SetSampleDuration(packet.duration).map_err(hr)?;
-                sample
-                    .SetUINT32(&MFSampleExtension_CleanPoint, u32::from(packet.keyframe))
-                    .map_err(hr)?;
-                packets.samples.push(sample);
-            }
+    let base = snapshot
+        .iter()
+        .find(|p| matches!(p.track, Track::Video) && p.keyframe)
+        .ok_or_else(|| RecorderError::Other("Replay has no keyframe".into()))?
+        .time;
+    let has_audio = snapshot
+        .iter()
+        .any(|p| matches!(p.track, Track::Audio) && p.time >= base);
+    let mut writer = AvWriter::new(path, header, has_audio)?;
+    for packet in snapshot {
+        if packet.time >= base {
+            writer.write(&packet, packet.time - base)?;
         }
-        mux(&temporary, header, &packets)?;
+    }
+    writer.finish()
+}
+
+// Native sinks stay on their own COM worker. Only owned encoded bytes cross threads.
+struct PendingFile {
+    output: std::path::PathBuf,
+    temporary: std::path::PathBuf,
+    published: bool,
+}
+impl PendingFile {
+    fn new(output: &Path) -> RResult<Self> {
+        if output.exists() {
+            return Err(RecorderError::Other("Output file already exists".into()));
+        }
+        let temporary = output.with_extension("partial.mp4");
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?,
+        );
+        Ok(Self {
+            output: output.to_owned(),
+            temporary,
+            published: false,
+        })
+    }
+    fn publish(&mut self) -> RResult<()> {
         std::fs::OpenOptions::new()
             .write(true)
-            .open(&temporary)?
+            .open(&self.temporary)?
             .sync_all()?;
-        let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-        let destination: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let source: Vec<u16> = self
+            .temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let destination: Vec<u16> = self
+            .output
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         unsafe {
             windows::Win32::Storage::FileSystem::MoveFileExW(
                 PCWSTR(source.as_ptr()),
@@ -433,13 +583,307 @@ fn export_snapshot(
             )
             .map_err(hr)?;
         }
+        self.published = true;
         Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
     }
-    result
 }
+impl Drop for PendingFile {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_file(&self.temporary);
+        }
+    }
+}
+struct AvWriter {
+    writer: Option<IMFSinkWriter>,
+    video: u32,
+    audio: Option<u32>,
+    file: PendingFile,
+    video_frames: u64,
+    last_video: Option<i64>,
+    last_audio: Option<i64>,
+}
+impl AvWriter {
+    fn new(path: &Path, header: &VideoFormatHeader, with_audio: bool) -> RResult<Self> {
+        unsafe {
+            let file = PendingFile::new(path)?;
+            let wide: Vec<u16> = file
+                .temporary
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            let mut attributes = None;
+            MFCreateAttributes(&mut attributes, 2).map_err(hr)?;
+            let attributes = attributes.unwrap();
+            attributes
+                .SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)
+                .map_err(hr)?;
+            attributes
+                .SetUINT32(&MF_SINK_WRITER_DISABLE_THROTTLING, 1)
+                .map_err(hr)?;
+            let writer =
+                MFCreateSinkWriterFromURL(PCWSTR(wide.as_ptr()), None, &attributes).map_err(hr)?;
+            let media_type = MFCreateMediaType().map_err(hr)?;
+            media_type
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .map_err(hr)?;
+            media_type
+                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .map_err(hr)?;
+            media_type
+                .SetUINT32(&MF_MT_AVG_BITRATE, header.bitrate)
+                .map_err(hr)?;
+            media_type
+                .SetUINT32(&MF_MT_MPEG2_PROFILE, header.profile)
+                .map_err(hr)?;
+            media_type
+                .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+                .map_err(hr)?;
+            media_type
+                .SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32)
+                .map_err(hr)?;
+            media_type
+                .SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)
+                .map_err(hr)?;
+            media_type
+                .SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)
+                .map_err(hr)?;
+            media_type
+                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)
+                .map_err(hr)?;
+            set_attr_size(&media_type, &MF_MT_FRAME_SIZE, header.width, header.height)?;
+            set_attr_ratio(
+                &media_type,
+                &MF_MT_FRAME_RATE,
+                header.fps_num,
+                header.fps_den,
+            )?;
+            set_attr_ratio(&media_type, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1)?;
+            if !header.sequence_header.is_empty() {
+                media_type
+                    .SetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &header.sequence_header)
+                    .map_err(hr)?;
+            }
+
+            let video = writer.AddStream(&media_type).map_err(hr)?;
+            writer
+                .SetInputMediaType(video, &media_type, None)
+                .map_err(hr)?;
+            let audio = if with_audio {
+                let audio_type = MFCreateMediaType().map_err(hr)?;
+                audio_type
+                    .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
+                    .map_err(hr)?;
+                audio_type
+                    .SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC)
+                    .map_err(hr)?;
+                audio_type
+                    .SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000)
+                    .map_err(hr)?;
+                audio_type
+                    .SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, 2)
+                    .map_err(hr)?;
+                audio_type
+                    .SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)
+                    .map_err(hr)?;
+                audio_type
+                    .SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16000)
+                    .map_err(hr)?;
+                audio_type
+                    .SetUINT32(&MF_MT_AAC_PAYLOAD_TYPE, 0)
+                    .map_err(hr)?;
+                audio_type
+                    .SetUINT32(&MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29)
+                    .map_err(hr)?;
+                let index = writer.AddStream(&audio_type).map_err(hr)?;
+                writer
+                    .SetInputMediaType(index, &audio_type, None)
+                    .map_err(hr)?;
+                Some(index)
+            } else {
+                None
+            };
+            writer.BeginWriting().map_err(hr)?;
+            Ok(Self {
+                writer: Some(writer),
+                video,
+                audio,
+                file,
+                video_frames: 0,
+                last_video: None,
+                last_audio: None,
+            })
+        }
+    }
+    fn write(&mut self, packet: &crate::session::Packet, time: i64) -> RResult<()> {
+        unsafe {
+            use crate::session::Track;
+            let (stream, last) = match packet.track {
+                Track::Video => (self.video, &mut self.last_video),
+                Track::Audio => match self.audio {
+                    Some(index) => (index, &mut self.last_audio),
+                    None => return Ok(()),
+                },
+            };
+            if time < 0 {
+                return Ok(());
+            }
+            if last.is_some_and(|previous| previous >= time) {
+                return Err(RecorderError::Other(
+                    "Nonmonotonic recording timestamps".into(),
+                ));
+            }
+            if matches!(packet.track, Track::Video) && self.video_frames == 0 && !packet.keyframe {
+                return Err(RecorderError::Other(
+                    "Recording must start at a video keyframe".into(),
+                ));
+            }
+            let sample = MFCreateSample().map_err(hr)?;
+            let buffer = MFCreateMemoryBuffer(packet.data.len() as u32).map_err(hr)?;
+            let mut pointer = std::ptr::null_mut();
+            buffer.Lock(&mut pointer, None, None).map_err(hr)?;
+            std::ptr::copy_nonoverlapping(packet.data.as_ptr(), pointer, packet.data.len());
+            buffer.Unlock().map_err(hr)?;
+            buffer
+                .SetCurrentLength(packet.data.len() as u32)
+                .map_err(hr)?;
+            sample.AddBuffer(&buffer).map_err(hr)?;
+            sample.SetSampleTime(time).map_err(hr)?;
+            sample.SetSampleDuration(packet.duration).map_err(hr)?;
+            sample
+                .SetUINT32(&MFSampleExtension_CleanPoint, u32::from(packet.keyframe))
+                .map_err(hr)?;
+            self.writer
+                .as_ref()
+                .unwrap()
+                .WriteSample(stream, &sample)
+                .map_err(hr)?;
+            *last = Some(time);
+            if matches!(packet.track, Track::Video) {
+                self.video_frames += 1;
+            }
+            Ok(())
+        }
+    }
+    fn finish(mut self) -> RResult<()> {
+        if self.video_frames == 0 {
+            return Err(RecorderError::Other(
+                "No video keyframe was recorded; no file saved".into(),
+            ));
+        }
+        let writer = self.writer.take().unwrap();
+        unsafe {
+            writer.Finalize().map_err(hr)?;
+        }
+        drop(writer);
+        self.file.publish()
+    }
+}
+impl Drop for AvWriter {
+    fn drop(&mut self) {
+        drop(self.writer.take());
+    }
+}
+struct RecordingPipe {
+    sender: Option<std::sync::mpsc::SyncSender<crate::session::Packet>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    queued_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    byte_limit: u64,
+    clock: crate::session::RecordingClock,
+    status: std::sync::Arc<std::sync::Mutex<crate::session::Status>>,
+}
+impl RecordingPipe {
+    fn start(
+        path: std::path::PathBuf,
+        header: VideoFormatHeader,
+        audio: bool,
+        status: std::sync::Arc<std::sync::Mutex<crate::session::Status>>,
+        byte_limit: u64,
+    ) -> RResult<Self> {
+        use std::sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            mpsc::sync_channel,
+            Arc,
+        };
+        let (sender, receiver) = sync_channel::<crate::session::Packet>(64);
+        let abort = Arc::new(AtomicBool::new(false));
+        let failed = abort.clone();
+        let queued_bytes = Arc::new(AtomicU64::new(0));
+        let pending = queued_bytes.clone();
+        let shared = status.clone();
+        {
+            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+            state.recording = true;
+            state.paused = false;
+            state.recorded_seconds = 0.0;
+            state.finalizing = false;
+            state.error = None;
+        }
+        let worker=std::thread::Builder::new().name("veyva-recording".into()).spawn(move||{
+            let result=(||->RResult<()>{let _mf=MfSession::new()?;let mut writer=AvWriter::new(&path,&header,audio)?;
+                while let Ok(packet)=receiver.recv(){pending.fetch_sub(packet.data.len() as u64,Ordering::AcqRel);if failed.load(Ordering::Acquire){return Err(RecorderError::Other("Recording stopped: disk writer could not keep up; no complete file saved".into()));}writer.write(&packet,packet.time)?;}
+                if failed.load(Ordering::Acquire){return Err(RecorderError::Other("Recording queue overflow; no complete file saved".into()));}writer.finish()})();
+            let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());state.recording=false;state.paused=false;state.finalizing=false;
+            match result{Ok(())=>state.last_saved=Some(path),Err(error)=>state.error=Some(error.to_string())}
+        }).map_err(|e|{let mut state=status.lock().unwrap_or_else(|e|e.into_inner());state.recording=false;RecorderError::Other(e.to_string())})?;
+        Ok(Self {
+            sender: Some(sender),
+            worker: Some(worker),
+            abort,
+            queued_bytes,
+            byte_limit,
+            clock: crate::session::RecordingClock::default(),
+            status,
+        })
+    }
+    fn finish(&mut self) {
+        if self.sender.is_none() {
+            return;
+        }
+        {
+            let mut state = self.status.lock().unwrap_or_else(|e| e.into_inner());
+            state.recording = false;
+            state.paused = false;
+            state.finalizing = true;
+        }
+        self.sender = None;
+    }
+    fn push(&mut self, mut packet: crate::session::Packet) {
+        use std::sync::atomic::Ordering;
+        if self.sender.is_none() {
+            return;
+        }
+        let Some(time) = self.clock.map(&packet) else {
+            return;
+        };
+        packet.time = time;
+        let bytes = packet.data.len() as u64;
+        let new = self.queued_bytes.fetch_add(bytes, Ordering::AcqRel) + bytes;
+        let failed =
+            new > self.byte_limit || self.sender.as_ref().unwrap().try_send(packet).is_err();
+        if failed {
+            self.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            self.abort.store(true, Ordering::Release);
+            self.finish();
+        } else {
+            self.status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recorded_seconds = self.clock.end as f64 / 10_000_000.0;
+        }
+    }
+}
+impl Drop for RecordingPipe {
+    fn drop(&mut self) {
+        self.sender = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 struct GraphicsStack {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,

@@ -1,7 +1,11 @@
+#[cfg(windows)]
+mod audio;
 mod capture;
 mod diagnostics;
 #[cfg(windows)]
 mod gui;
+#[cfg(windows)]
+mod hotkey;
 mod session;
 mod settings;
 use std::path::PathBuf;

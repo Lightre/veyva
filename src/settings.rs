@@ -66,9 +66,7 @@ impl CaptureProfile {
             return Err("video_kbps must be between 250 and 100000".into());
         }
         if self.audio_kbps != 128 {
-            return Err(
-                "audio_kbps is fixed at 128 because audio settings are not implemented".into(),
-            );
+            return Err("audio_kbps is fixed at 128 for the current system-audio encoder".into());
         }
         if !(5..=600).contains(&self.history_seconds) {
             return Err("history_seconds must be between 5 and 600".into());
@@ -93,6 +91,10 @@ impl CaptureProfile {
 pub struct Settings {
     pub profile: CaptureProfile,
     pub monitor: u32,
+    pub replay_auto_start: bool,
+    pub audio_enabled: bool,
+    pub hotkey_modifiers: u32,
+    pub hotkey_key: u32,
 }
 
 impl Default for Settings {
@@ -100,11 +102,26 @@ impl Default for Settings {
         Self {
             profile: CaptureProfile::low_end(),
             monitor: 0,
+            replay_auto_start: true,
+            audio_enabled: true,
+            hotkey_modifiers: 1,
+            hotkey_key: 0x70,
         }
     }
 }
 
 impl Settings {
+    pub fn validate(&self) -> Result<(), String> {
+        self.profile.validate()?;
+        if self.hotkey_modifiers == 0
+            || self.hotkey_modifiers > 15
+            || !(0x70..=0x7B).contains(&self.hotkey_key)
+        {
+            return Err("Replay shortcut requires a modifier and an F1-F12 key".into());
+        }
+        Ok(())
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         match fs::read_to_string(path) {
             Ok(contents) => Self::from_text(&contents),
@@ -114,7 +131,7 @@ impl Settings {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        self.profile.validate()?;
+        self.validate()?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -172,22 +189,23 @@ impl Settings {
             "history_seconds" => candidate.profile.history_seconds = parsed,
             "replay_budget_mib" => candidate.profile.replay_budget_mib = parsed,
             "monitor" => candidate.monitor = parsed,
+            "replay_auto_start" if parsed <= 1 => candidate.replay_auto_start = parsed == 1,
+            "audio_enabled" if parsed <= 1 => candidate.audio_enabled = parsed == 1,
+            "hotkey_modifiers" => candidate.hotkey_modifiers = parsed,
+            "hotkey_key" => candidate.hotkey_key = parsed,
             "audio_kbps" => {
-                return Err(
-                    "audio_kbps cannot be changed because audio settings are not implemented"
-                        .into(),
-                )
+                return Err("The current system-audio encoder uses a fixed 128 kbps bitrate".into())
             }
             _ => return Err(format!("unknown setting: {key}")),
         }
-        candidate.profile.validate()?;
+        candidate.validate()?;
         *self = candidate;
         Ok(())
     }
 
     pub fn to_text(self) -> String {
         format!(
-            "version=1\nwidth={}\nheight={}\nfps={}\nvideo_kbps={}\naudio_kbps={}\nhistory_seconds={}\nreplay_budget_mib={}\nmonitor={}\n",
+            "version=2\nwidth={}\nheight={}\nfps={}\nvideo_kbps={}\naudio_kbps={}\nhistory_seconds={}\nreplay_budget_mib={}\nmonitor={}\nreplay_auto_start={}\naudio_enabled={}\nhotkey_modifiers={}\nhotkey_key={}\n",
             self.profile.width,
             self.profile.height,
             self.profile.fps,
@@ -196,6 +214,10 @@ impl Settings {
             self.profile.history_seconds,
             self.profile.replay_budget_mib,
             self.monitor,
+            u32::from(self.replay_auto_start),
+            u32::from(self.audio_enabled),
+            self.hotkey_modifiers,
+            self.hotkey_key,
         )
     }
 
@@ -209,6 +231,10 @@ impl Settings {
         let mut history_seconds = None;
         let mut replay_budget_mib = None;
         let mut monitor = None;
+        let mut replay_auto_start = None;
+        let mut audio_enabled = None;
+        let mut hotkey_modifiers = None;
+        let mut hotkey_key = None;
 
         for (index, line) in contents.lines().enumerate() {
             let (key, value) = line
@@ -227,6 +253,10 @@ impl Settings {
                 "history_seconds" => &mut history_seconds,
                 "replay_budget_mib" => &mut replay_budget_mib,
                 "monitor" => &mut monitor,
+                "replay_auto_start" => &mut replay_auto_start,
+                "audio_enabled" => &mut audio_enabled,
+                "hotkey_modifiers" => &mut hotkey_modifiers,
+                "hotkey_key" => &mut hotkey_key,
                 _ => return Err(format!("unknown setting: {key}")),
             };
             if slot.is_some() {
@@ -240,7 +270,7 @@ impl Settings {
         }
 
         match version {
-            Some(1) => {}
+            Some(1 | 2) => {}
             Some(_) => return Err("unsupported settings version".into()),
             None => return Err("missing settings version".into()),
         }
@@ -254,10 +284,38 @@ impl Settings {
             replay_budget_mib: required(replay_budget_mib, "replay_budget_mib")?,
         };
         profile.validate()?;
-        Ok(Self {
+        let legacy = version == Some(1);
+        let auto = if legacy {
+            replay_auto_start.unwrap_or(1)
+        } else {
+            required(replay_auto_start, "replay_auto_start")?
+        };
+        let audio = if legacy {
+            audio_enabled.unwrap_or(1)
+        } else {
+            required(audio_enabled, "audio_enabled")?
+        };
+        if auto > 1 || audio > 1 {
+            return Err("Boolean settings must be 0 or 1".into());
+        }
+        let result = Self {
             profile,
             monitor: required(monitor, "monitor")?,
-        })
+            replay_auto_start: auto == 1,
+            audio_enabled: audio == 1,
+            hotkey_modifiers: if legacy {
+                hotkey_modifiers.unwrap_or(1)
+            } else {
+                required(hotkey_modifiers, "hotkey_modifiers")?
+            },
+            hotkey_key: if legacy {
+                hotkey_key.unwrap_or(0x70)
+            } else {
+                required(hotkey_key, "hotkey_key")?
+            },
+        };
+        result.validate()?;
+        Ok(result)
     }
 
     pub fn default_path() -> Result<PathBuf, String> {
@@ -292,6 +350,27 @@ mod tests {
         std::fs::remove_dir(&dir).unwrap();
     }
     #[test]
+    fn legacy_settings_enable_replay_audio_and_alt_f1() {
+        let original = Settings::default().to_text();
+        let legacy = original
+            .lines()
+            .filter(|line| {
+                !line.starts_with("replay_auto_start=")
+                    && !line.starts_with("audio_enabled=")
+                    && !line.starts_with("hotkey_")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("version=2", "version=1");
+        let loaded = Settings::from_text(&legacy).unwrap();
+        assert!(loaded.replay_auto_start && loaded.audio_enabled);
+        assert_eq!((loaded.hotkey_modifiers, loaded.hotkey_key), (1, 0x70));
+        let mut changed = loaded;
+        assert!(changed.set("hotkey_modifiers", "0").is_err());
+        changed.set("audio_enabled", "0").unwrap();
+        assert!(!changed.audio_enabled);
+    }
+    #[test]
     fn settings_text_round_trips() {
         let settings = Settings::default();
         assert_eq!(Settings::from_text(&settings.to_text()).unwrap(), settings);
@@ -300,15 +379,15 @@ mod tests {
     #[test]
     fn rejects_corrupt_settings() {
         let valid = Settings::default().to_text();
-        assert!(Settings::from_text(&valid.replace("version=1", "version=2")).is_err());
+        assert!(Settings::from_text(&valid.replace("version=2", "version=99")).is_err());
         assert!(Settings::from_text(&format!("{valid}width=1280\n")).is_err());
         assert!(Settings::from_text(&format!("{valid}unknown=1\n")).is_err());
         assert!(Settings::from_text(&valid.replace("height=720", "height=721")).is_err());
-        assert!(Settings::from_text("version=1\nwidth=1280\n").is_err());
+        assert!(Settings::from_text("version=2\nwidth=1280\n").is_err());
     }
 
     #[test]
-    fn set_is_atomic_and_rejects_unimplemented_audio() {
+    fn set_is_atomic_and_rejects_unsupported_audio_bitrate() {
         let mut settings = Settings::default();
         let original = settings;
         assert!(settings.set("width", "321").is_err());
