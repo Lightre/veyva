@@ -26,8 +26,8 @@ impl Hotkey {
         key: u32,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, String> {
-        if modifiers == 0 || modifiers > 15 || !(0x70..=0x7B).contains(&key) {
-            return Err("Choose a modifier and F1-F12".into());
+        if !crate::settings::valid_shortcut(modifiers, key) {
+            return Err("Choose a modifier and a supported key".into());
         }
         let stop = Arc::new(AtomicBool::new(false));
         let pressed = Arc::new(AtomicBool::new(false));
@@ -106,6 +106,23 @@ pub fn label(modifiers: u32, key: u32) -> String {
             parts.push(name.to_string());
         }
     }
-    parts.push(format!("F{}", key.saturating_sub(0x70) + 1));
+    parts.push(match key {
+        0x30..=0x39 | 0x41..=0x5A => char::from_u32(key).unwrap().to_string(),
+        0x70..=0x87 => format!("F{}", key - 0x70 + 1),
+        0x09 => "Tab".into(),
+        0x0D => "Enter".into(),
+        0x20 => "Space".into(),
+        0x21 => "Page Up".into(),
+        0x22 => "Page Down".into(),
+        0x23 => "End".into(),
+        0x24 => "Home".into(),
+        0x25 => "Left".into(),
+        0x26 => "Up".into(),
+        0x27 => "Right".into(),
+        0x28 => "Down".into(),
+        0x2D => "Insert".into(),
+        0x2E => "Delete".into(),
+        _ => format!("Key 0x{key:02X}"),
+    });
     parts.join("+")
 }

@@ -113,6 +113,10 @@ pub struct Settings {
     pub capture_cursor: bool,
     pub hotkey_modifiers: u32,
     pub hotkey_key: u32,
+    pub record_hotkey_modifiers: u32,
+    pub record_hotkey_key: u32,
+    pub pause_hotkey_modifiers: u32,
+    pub pause_hotkey_key: u32,
 }
 
 impl Default for Settings {
@@ -126,6 +130,10 @@ impl Default for Settings {
             capture_cursor: true,
             hotkey_modifiers: 1,
             hotkey_key: 0x70,
+            record_hotkey_modifiers: 6,
+            record_hotkey_key: 0x52,
+            pause_hotkey_modifiers: 6,
+            pause_hotkey_key: 0x50,
         }
     }
 }
@@ -133,11 +141,18 @@ impl Default for Settings {
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         self.profile.validate()?;
-        if self.hotkey_modifiers == 0
-            || self.hotkey_modifiers > 15
-            || !(0x70..=0x7B).contains(&self.hotkey_key)
-        {
-            return Err("Replay shortcut requires a modifier and an F1-F12 key".into());
+        let shortcuts = [
+            (self.hotkey_modifiers, self.hotkey_key),
+            (self.record_hotkey_modifiers, self.record_hotkey_key),
+            (self.pause_hotkey_modifiers, self.pause_hotkey_key),
+        ];
+        for (index, &(modifiers, key)) in shortcuts.iter().enumerate() {
+            if !valid_shortcut(modifiers, key) {
+                return Err("Shortcuts require a modifier and a supported key".into());
+            }
+            if shortcuts[..index].contains(&(modifiers, key)) {
+                return Err("Shortcuts must use distinct key combinations".into());
+            }
         }
         Ok(())
     }
@@ -223,6 +238,10 @@ impl Settings {
             "capture_cursor" if parsed <= 1 => candidate.capture_cursor = parsed == 1,
             "hotkey_modifiers" => candidate.hotkey_modifiers = parsed,
             "hotkey_key" => candidate.hotkey_key = parsed,
+            "record_hotkey_modifiers" => candidate.record_hotkey_modifiers = parsed,
+            "record_hotkey_key" => candidate.record_hotkey_key = parsed,
+            "pause_hotkey_modifiers" => candidate.pause_hotkey_modifiers = parsed,
+            "pause_hotkey_key" => candidate.pause_hotkey_key = parsed,
             "audio_kbps" => {
                 return Err("The current system-audio encoder uses a fixed 128 kbps bitrate".into())
             }
@@ -250,6 +269,10 @@ impl Settings {
             self.hotkey_modifiers,
             self.hotkey_key,
             self.theme.as_str(),
+        ) + &format!(
+            "record_hotkey_modifiers={}\nrecord_hotkey_key={}\npause_hotkey_modifiers={}\npause_hotkey_key={}\n",
+            self.record_hotkey_modifiers, self.record_hotkey_key,
+            self.pause_hotkey_modifiers, self.pause_hotkey_key,
         )
     }
 
@@ -268,6 +291,10 @@ impl Settings {
         let mut capture_cursor = None;
         let mut hotkey_modifiers = None;
         let mut hotkey_key = None;
+        let mut record_hotkey_modifiers = None;
+        let mut record_hotkey_key = None;
+        let mut pause_hotkey_modifiers = None;
+        let mut pause_hotkey_key = None;
         let mut theme = None;
 
         for (index, line) in contents.lines().enumerate() {
@@ -292,6 +319,10 @@ impl Settings {
                 "capture_cursor" => &mut capture_cursor,
                 "hotkey_modifiers" => &mut hotkey_modifiers,
                 "hotkey_key" => &mut hotkey_key,
+                "record_hotkey_modifiers" => &mut record_hotkey_modifiers,
+                "record_hotkey_key" => &mut record_hotkey_key,
+                "pause_hotkey_modifiers" => &mut pause_hotkey_modifiers,
+                "pause_hotkey_key" => &mut pause_hotkey_key,
                 "theme" => {
                     if theme.is_some() {
                         return Err("duplicate setting: theme".into());
@@ -346,6 +377,10 @@ impl Settings {
             return Err("Boolean settings must be 0 or 1".into());
         }
         let result = Self {
+            record_hotkey_modifiers: record_hotkey_modifiers.unwrap_or(6),
+            record_hotkey_key: record_hotkey_key.unwrap_or(0x52),
+            pause_hotkey_modifiers: pause_hotkey_modifiers.unwrap_or(6),
+            pause_hotkey_key: pause_hotkey_key.unwrap_or(0x50),
             profile,
             theme: theme.unwrap_or_default(),
             monitor: required(monitor, "monitor")?,
@@ -380,9 +415,86 @@ fn required(value: Option<u32>, key: &str) -> Result<u32, String> {
     value.ok_or_else(|| format!("missing setting: {key}"))
 }
 
+pub fn valid_shortcut(modifiers: u32, key: u32) -> bool {
+    (1..=15).contains(&modifiers)
+        && matches!(key, 0x30..=0x39 | 0x41..=0x5A | 0x70..=0x87
+            | 0x09 | 0x0D | 0x20..=0x28 | 0x2D | 0x2E)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_shortcuts_round_trip_and_legacy_files_receive_defaults() {
+        let settings = Settings {
+            record_hotkey_modifiers: 3,
+            record_hotkey_key: 0x39,
+            pause_hotkey_modifiers: 5,
+            pause_hotkey_key: 0x87,
+            ..Default::default()
+        };
+        assert_eq!(Settings::from_text(&settings.to_text()).unwrap(), settings);
+        let old = Settings::default()
+            .to_text()
+            .lines()
+            .filter(|line| {
+                !line.starts_with("record_hotkey_") && !line.starts_with("pause_hotkey_")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for version in ["version=1", "version=2"] {
+            assert_eq!(
+                Settings::from_text(&old.replace("version=2", version)).unwrap(),
+                Settings::default()
+            );
+        }
+    }
+
+    #[test]
+    fn shortcuts_reject_duplicates_and_invalid_values() {
+        let defaults = Settings::default();
+        for (modifiers, key) in [(0, 0x41), (16, 0x41), (1, 0), (1, 0x88), (1, 0x40)] {
+            assert!(!valid_shortcut(modifiers, key));
+            let invalid = Settings {
+                pause_hotkey_modifiers: modifiers,
+                pause_hotkey_key: key,
+                ..defaults
+            };
+            assert!(invalid.validate().is_err());
+            assert!(Settings::from_text(&invalid.to_text()).is_err());
+        }
+        for key in [
+            0x30, 0x39, 0x41, 0x5A, 0x70, 0x87, 0x09, 0x0D, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+            0x26, 0x27, 0x28, 0x2D, 0x2E,
+        ] {
+            assert!(valid_shortcut(15, key));
+        }
+        for (modifiers, key) in [
+            (defaults.hotkey_modifiers, defaults.hotkey_key),
+            (defaults.record_hotkey_modifiers, defaults.record_hotkey_key),
+        ] {
+            let duplicate = Settings {
+                pause_hotkey_modifiers: modifiers,
+                pause_hotkey_key: key,
+                ..defaults
+            };
+            assert!(duplicate.validate().is_err());
+            assert!(Settings::from_text(&duplicate.to_text()).is_err());
+        }
+        let duplicate = Settings {
+            record_hotkey_modifiers: defaults.hotkey_modifiers,
+            record_hotkey_key: defaults.hotkey_key,
+            ..defaults
+        };
+        assert!(duplicate.validate().is_err());
+        let mut settings = defaults;
+        assert!(settings.set("pause_hotkey_key", "82").is_err());
+        assert_eq!(settings, defaults);
+        assert!(
+            Settings::from_text(&format!("{}record_hotkey_key=82\n", defaults.to_text())).is_err()
+        );
+    }
 
     #[test]
     fn cursor_setting_round_trips_defaults_and_rejects_invalid_values() {
