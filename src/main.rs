@@ -139,6 +139,7 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
         options.seconds,
         settings.profile,
         settings.monitor,
+        settings.capture_cursor,
         options.output.as_deref(),
         options.probe,
         &mut log,

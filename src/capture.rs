@@ -52,17 +52,34 @@ pub fn run(
     seconds: u32,
     profile: crate::settings::CaptureProfile,
     monitor: u32,
+    capture_cursor: bool,
     output: Option<&Path>,
     probe: bool,
     log: &mut Logger,
 ) -> RResult<()> {
     #[cfg(windows)]
     {
-        windows_capture::run(seconds, profile, monitor, output, probe, log)
+        windows_capture::run(
+            seconds,
+            profile,
+            monitor,
+            capture_cursor,
+            output,
+            probe,
+            log,
+        )
     }
     #[cfg(not(windows))]
     {
-        let _ = (seconds, profile, monitor, output, probe, log);
+        let _ = (
+            seconds,
+            profile,
+            monitor,
+            capture_cursor,
+            output,
+            probe,
+            log,
+        );
         Err(RecorderError::Other(
             "Capture is supported on Windows only".into(),
         ))

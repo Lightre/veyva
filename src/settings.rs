@@ -110,6 +110,7 @@ pub struct Settings {
     pub monitor: u32,
     pub replay_auto_start: bool,
     pub audio_enabled: bool,
+    pub capture_cursor: bool,
     pub hotkey_modifiers: u32,
     pub hotkey_key: u32,
 }
@@ -122,6 +123,7 @@ impl Default for Settings {
             monitor: 0,
             replay_auto_start: true,
             audio_enabled: true,
+            capture_cursor: true,
             hotkey_modifiers: 1,
             hotkey_key: 0x70,
         }
@@ -218,6 +220,7 @@ impl Settings {
             "monitor" => candidate.monitor = parsed,
             "replay_auto_start" if parsed <= 1 => candidate.replay_auto_start = parsed == 1,
             "audio_enabled" if parsed <= 1 => candidate.audio_enabled = parsed == 1,
+            "capture_cursor" if parsed <= 1 => candidate.capture_cursor = parsed == 1,
             "hotkey_modifiers" => candidate.hotkey_modifiers = parsed,
             "hotkey_key" => candidate.hotkey_key = parsed,
             "audio_kbps" => {
@@ -232,7 +235,7 @@ impl Settings {
 
     pub fn to_text(self) -> String {
         format!(
-            "version=2\nwidth={}\nheight={}\nfps={}\nvideo_kbps={}\naudio_kbps={}\nhistory_seconds={}\nreplay_budget_mib={}\nmonitor={}\nreplay_auto_start={}\naudio_enabled={}\nhotkey_modifiers={}\nhotkey_key={}\ntheme={}\n",
+            "version=2\nwidth={}\nheight={}\nfps={}\nvideo_kbps={}\naudio_kbps={}\nhistory_seconds={}\nreplay_budget_mib={}\nmonitor={}\nreplay_auto_start={}\naudio_enabled={}\ncapture_cursor={}\nhotkey_modifiers={}\nhotkey_key={}\ntheme={}\n",
             self.profile.width,
             self.profile.height,
             self.profile.fps,
@@ -243,6 +246,7 @@ impl Settings {
             self.monitor,
             u32::from(self.replay_auto_start),
             u32::from(self.audio_enabled),
+            u32::from(self.capture_cursor),
             self.hotkey_modifiers,
             self.hotkey_key,
             self.theme.as_str(),
@@ -261,6 +265,7 @@ impl Settings {
         let mut monitor = None;
         let mut replay_auto_start = None;
         let mut audio_enabled = None;
+        let mut capture_cursor = None;
         let mut hotkey_modifiers = None;
         let mut hotkey_key = None;
         let mut theme = None;
@@ -284,6 +289,7 @@ impl Settings {
                 "monitor" => &mut monitor,
                 "replay_auto_start" => &mut replay_auto_start,
                 "audio_enabled" => &mut audio_enabled,
+                "capture_cursor" => &mut capture_cursor,
                 "hotkey_modifiers" => &mut hotkey_modifiers,
                 "hotkey_key" => &mut hotkey_key,
                 "theme" => {
@@ -335,7 +341,8 @@ impl Settings {
         } else {
             required(audio_enabled, "audio_enabled")?
         };
-        if auto > 1 || audio > 1 {
+        let cursor = capture_cursor.unwrap_or(1);
+        if auto > 1 || audio > 1 || cursor > 1 {
             return Err("Boolean settings must be 0 or 1".into());
         }
         let result = Self {
@@ -344,6 +351,7 @@ impl Settings {
             monitor: required(monitor, "monitor")?,
             replay_auto_start: auto == 1,
             audio_enabled: audio == 1,
+            capture_cursor: cursor == 1,
             hotkey_modifiers: if legacy {
                 hotkey_modifiers.unwrap_or(1)
             } else {
@@ -375,6 +383,32 @@ fn required(value: Option<u32>, key: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_setting_round_trips_defaults_and_rejects_invalid_values() {
+        let mut settings = Settings::default();
+        assert!(settings.capture_cursor);
+        settings.set("capture_cursor", "0").unwrap();
+        assert!(
+            !Settings::from_text(&settings.to_text())
+                .unwrap()
+                .capture_cursor
+        );
+        let legacy = Settings::default()
+            .to_text()
+            .replace("capture_cursor=1\n", "");
+        assert!(Settings::from_text(&legacy).unwrap().capture_cursor);
+        assert!(
+            Settings::from_text(&legacy.replace("version=2", "version=1"))
+                .unwrap()
+                .capture_cursor
+        );
+        assert!(settings.set("capture_cursor", "2").is_err());
+        assert!(Settings::from_text(&format!("{legacy}capture_cursor=2\n")).is_err());
+        assert!(
+            Settings::from_text(&format!("{legacy}capture_cursor=1\ncapture_cursor=0\n")).is_err()
+        );
+    }
 
     #[test]
     fn saves_and_replaces_in_requested_directory() {
@@ -413,8 +447,10 @@ mod tests {
     }
     #[test]
     fn settings_text_round_trips() {
-        let mut settings = Settings::default();
-        settings.theme = Theme::Light;
+        let settings = Settings {
+            theme: Theme::Light,
+            ..Default::default()
+        };
         assert_eq!(Settings::from_text(&settings.to_text()).unwrap(), settings);
     }
 

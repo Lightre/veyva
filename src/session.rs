@@ -125,7 +125,7 @@ pub fn start(settings: Settings) -> Result<Session, String> {
             let _active = active;
             let result = (|| -> crate::capture::RResult<()> {
                 let (mut log, _) = crate::diagnostics::Logger::open()?;
-                log.write(&format!("Capture session starting: monitor={}, {}x{} at {} FPS; H.264; audio_requested={}; history_seconds={}; payload_budget_mib={}", settings.monitor, settings.profile.width, settings.profile.height, settings.profile.fps, settings.audio_enabled, settings.profile.history_seconds, settings.profile.replay_budget_mib))?;
+                log.write(&format!("Capture session starting: monitor={}, {}x{} at {} FPS; H.264; audio_requested={}; capture_cursor={}; history_seconds={}; payload_budget_mib={}", settings.monitor, settings.profile.width, settings.profile.height, settings.profile.fps, settings.audio_enabled, settings.capture_cursor, settings.profile.history_seconds, settings.profile.replay_budget_mib))?;
                 let result = crate::capture::continuous(settings, receiver, stopping, shared.clone());
                 match &result {
                     Ok(()) => { log.write("Replay session stopped")?; }

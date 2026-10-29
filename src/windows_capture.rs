@@ -27,6 +27,8 @@ use windows::{
     },
 };
 const HNS_PER_SECOND: i64 = 10_000_000;
+#[path = "cursor.rs"]
+mod cursor;
 
 struct FrameTimer(windows::Win32::Foundation::HANDLE);
 
@@ -151,6 +153,7 @@ pub(super) fn continuous(
     let _mf = MfSession::new()?;
     let profile = settings.profile;
     let gfx = GraphicsStack::create(settings.monitor)?;
+    let mut cursor = cursor::CursorCompositor::new(settings.capture_cursor);
     let mut encoder = HardwareEncoder::create(
         &gfx.device,
         profile.width,
@@ -402,7 +405,7 @@ pub(super) fn continuous(
                             .ok_or_else(|| RecorderError::Other("Empty desktop frame".into()))?
                             .cast()
                             .map_err(hr)?;
-                        converter.convert(&texture)
+                        cursor.convert(&gfx, &converter, &texture, &info)
                     })();
                     let released = gfx.duplication.ReleaseFrame().map_err(hr);
                     converted?;
@@ -1813,6 +1816,7 @@ pub fn run(
     seconds: u32,
     profile: CaptureProfile,
     monitor: u32,
+    capture_cursor: bool,
     output: Option<&Path>,
     probe: bool,
     log: &mut Logger,
@@ -1820,6 +1824,7 @@ pub fn run(
     profile.validate().map_err(RecorderError::Other)?;
     let _session = MfSession::new()?;
     let gfx = GraphicsStack::create(monitor)?;
+    let mut cursor = cursor::CursorCompositor::new(capture_cursor);
     log.write(&format!(
         "Adapter: {}; VRAM: {} MiB; display: {} ({}x{})",
         gfx.adapter_name, gfx.vram_mb, monitor, gfx.src_width, gfx.src_height
@@ -1967,7 +1972,7 @@ pub fn run(
                                 RecorderError::Other("Empty desktop frame".into())
                             })?;
                             let texture: ID3D11Texture2D = resource.cast().map_err(hr)?;
-                            converter.convert(&texture)
+                            cursor.convert(&gfx, &converter, &texture, &frame_info)
                         })();
                         let released = gfx.duplication.ReleaseFrame().map_err(hr);
                         converted?;
