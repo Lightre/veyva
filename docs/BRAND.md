@@ -13,7 +13,7 @@ The name is short and easy to place in a tray menu. It is provisional: an existi
 - Text: mist `#EEF4F7`; secondary text `#A9B7C6`.
 - Warning: amber `#FFC46B`; failure: coral `#FF7D87`.
 - Typography: system Segoe UI; no downloaded fonts.
-- Mark: an open replay arc enclosing a play triangle. See `assets/mark.svg`.
+- Mark: an open replay arc enclosing a play triangle. See `assets/mark.svg`; the Windows icon is `assets/veyra.ico`.
 
 ## Interface template
 
@@ -24,3 +24,7 @@ Tray menu: "Open Veyra", "Start replay" / "Stop replay", "Save replay", "Quit". 
 Use calm factual language. Never display fake CPU usage, FPS impact, saved clips or encoder availability. No dashboard charts, autoplay preview or decorative animation in the initial control window.
 
 The application UI has not been implemented in this scaffold.
+
+## Asset generation
+
+`assets/theme.css` exposes the palette and system font as reusable tokens. Regenerate the Windows icon from the mark geometry with `python tools/generate_icon.py` (requires Pillow; no network access).

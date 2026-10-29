@@ -27,3 +27,9 @@ Record CPU, GPU, hardware encoder, RAM, Windows build, driver, game/workload and
 Initial investigation goals, not guarantees: less than 3% average FPS loss at Low End, bounded memory over a 30-minute run, decodable clips with seeking, and no growing A/V drift. Use repeated comparable runs and report variation. Test an older integrated GPU as well as a discrete GPU before claiming low-end support.
 
 Mandatory cases: first keyframe, full ring, repeated save, recording plus replay, encoder unavailable, monitor resolution change, lock/unlock, sleep/wake, audio-device change, disk full and quit during export.
+
+## Current implementation update
+
+Milestone 1 has a command-line implementation: selected-display GPU capture, adapter-specific hardware H.264 negotiation, silent short MP4 export and persistent diagnostics. See `VALIDATION.md` for actual observations. The initial scaffold's no-dependency state has been superseded by the pinned Windows API binding dependency.
+
+Milestone 2 is next: a true GOP-aligned replay ring, bounded snapshot ownership, and asynchronous export while capture continues. Do not treat the current short-recording sample collection as that replay ring.
