@@ -242,7 +242,6 @@ impl Tray {
                         DispatchMessageW(&msg);
                     }
                     state.available.store(false, Ordering::Release);
-                    state.event(1);
                     let data = NOTIFYICONDATAW {
                         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
                         hWnd: window,
@@ -388,14 +387,13 @@ pub fn wake_desktop() {
             if pid != std::process::id() {
                 return BOOL(1);
             }
-            let mut title = [0u16; 32];
-            let len = GetWindowTextW(window, &mut title);
-            if len <= 0 || String::from_utf16_lossy(&title[..len as usize]) != "Veyva" {
-                return BOOL(1);
-            }
+            // GetWindowTextW sends WM_GETTEXT for windows in our own process.
+            // Calling it from this worker can deadlock against the UI joining
+            // the tray thread at shutdown. Class metadata needs no UI callback.
             let mut class = [0u16; 64];
             let len = GetClassNameW(window, &mut class);
-            if len > 0 && String::from_utf16_lossy(&class[..len as usize]) == "VeyvaTrayHost" {
+            // The pinned winit 0.30 backend uses this default desktop class.
+            if len <= 0 || String::from_utf16_lossy(&class[..len as usize]) != "Window Class" {
                 return BOOL(1);
             }
             let _ = PostMessageW(window, WM_PAINT, WPARAM(0), LPARAM(0));

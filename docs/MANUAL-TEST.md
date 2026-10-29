@@ -63,3 +63,8 @@ Background and startup default to disabled; microphone also defaults to disabled
 ## Hidden tray command regression
 
 Hide Veyva using close-to-tray. A single left click or Show Veyva must restore it. Hide again and use Save Replay; the replay must save without revealing the window. Test the replay hotkey while hidden. Quit must restore the closing window if needed, finalize and exit. Repeat with login/background launch and a second executable launch. These checks remain manual; incremental Clippy does not verify native message delivery.
+
+
+## Tray shutdown deadlock regression
+
+Disable close-to-tray, close the window with replay active, and verify both the window and process exit after finalization. Repeat with replay stopped and via tray Quit. Then re-enable close-to-tray and verify Show, Save Replay and the global shortcut while hidden. Native wake routing must not read a same-process window title from a worker: GetWindowTextW can synchronously wait on the UI while the UI joins that worker. The wake helper now uses PID and pinned winit class metadata only; normal tray shutdown does not wake the exiting UI.
