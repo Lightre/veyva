@@ -66,6 +66,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
     style.visuals.widgets.hovered.bg_fill = p.accent.gamma_multiply(0.18);
     style.visuals.widgets.hovered.weak_bg_fill = p.surface;
     style.visuals.widgets.active.bg_fill = p.accent.gamma_multiply(0.3);
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
     style.spacing.item_spacing = Vec2::new(12.0, 12.0);
     style.spacing.button_padding = Vec2::new(16.0, 10.0);
     style
@@ -104,6 +105,11 @@ struct App {
     page: Page,
     logo: egui::TextureHandle,
     settings: Settings,
+    applied: Settings,
+    pending_apply: Option<bool>,
+    pending_command: Option<(u8, bool)>,
+    pending_saved: Option<PathBuf>,
+    pending_error: Option<String>,
     settings_path: Result<PathBuf, String>,
     load_error: Option<String>,
     error: Option<String>,
@@ -152,6 +158,11 @@ impl App {
             page: Page::Capture,
             logo,
             settings,
+            applied: settings,
+            pending_apply: None,
+            pending_command: None,
+            pending_saved: None,
+            pending_error: None,
             settings_path,
             load_error,
             error: None,
@@ -183,7 +194,7 @@ impl App {
 
     fn start(&mut self) {
         self.error = None;
-        let result = self.persist().and_then(|_| session::start(self.settings));
+        let result = session::start(self.applied);
         match result {
             Ok(s) => {
                 self.session = Some(s);
@@ -194,11 +205,134 @@ impl App {
     }
 
     fn send(&mut self, command: Command) {
+        if (self.pending_apply.is_some() || self.pending_command.is_some())
+            && !matches!(command, Command::Stop)
+        {
+            return;
+        }
+        let pending = match &command {
+            Command::StartRecording(_) => Some((0, true)),
+            Command::PauseRecording => Some((1, true)),
+            Command::ResumeRecording => Some((1, false)),
+            Command::FinishRecording => Some((0, false)),
+            Command::SetReplayEnabled(value) => Some((2, *value)),
+            Command::SaveReplay(_) => Some((3, true)),
+            Command::Stop => None,
+        };
         if let Some(s) = &self.session {
-            if let Err(e) = s.send(command) {
-                self.error = Some(e);
+            self.pending_error = s.status.lock().ok().and_then(|s| s.error.clone());
+            match s.send(command) {
+                Ok(()) => self.pending_command = pending,
+                Err(error) => self.error = Some(error),
             }
         }
+    }
+
+    fn apply_settings(&mut self) {
+        let state = self
+            .session
+            .as_ref()
+            .and_then(|s| s.status.lock().ok())
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        if self.pending_apply.is_some()
+            || self.pending_command.is_some()
+            || state.phase == "Starting"
+            || self.closing
+            || state.recording
+            || state.finalizing
+            || state.saving
+            || state.phase.starts_with("Stopping")
+        {
+            return;
+        }
+        if let Err(error) = self.persist() {
+            self.error = Some(error);
+            return;
+        }
+        self.error = None;
+        if self.active() {
+            self.pending_apply = Some(state.replay_enabled);
+            self.notice = Some(
+                "Applying preferences: stopping capture safely. Replay history will be cleared."
+                    .into(),
+            );
+            self.send(Command::Stop);
+        } else {
+            self.applied = self.settings;
+            self.bind_hotkey();
+            self.notice = Some("Preferences applied. New captures use these settings.".into());
+        }
+    }
+
+    fn apply_controls(&mut self, ui: &mut egui::Ui) {
+        let state = self
+            .session
+            .as_ref()
+            .and_then(|s| s.status.lock().ok())
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        let busy = self.pending_command.is_some()
+            || state.phase == "Starting"
+            || self.pending_apply.is_some()
+            || self.closing
+            || state.recording
+            || state.finalizing
+            || state.saving
+            || state.phase.starts_with("Stopping");
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !busy && self.load_error.is_none() && self.settings != self.applied,
+                    egui::Button::new("Apply changes"),
+                )
+                .clicked()
+            {
+                self.apply_settings();
+            }
+            if ui
+                .add_enabled(
+                    !busy && self.settings != self.applied,
+                    egui::Button::new("Discard changes"),
+                )
+                .clicked()
+            {
+                self.settings = self.applied;
+            }
+        });
+        ui.label(
+            RichText::new(if self.pending_apply.is_some() {
+                "Applying preferences..."
+            } else if busy {
+                "Apply after recording and exports finish."
+            } else if self.settings != self.applied {
+                "Unsaved changes. Applying restarts active replay and clears its history."
+            } else {
+                "All preferences applied."
+            })
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+    }
+
+    fn quick_capture_settings(&mut self, ui: &mut egui::Ui) {
+        egui::Grid::new(ui.id().with("quick-capture"))
+            .num_columns(2)
+            .spacing([16.0, 14.0])
+            .show(ui, |ui| {
+                field(ui, "Width", &mut self.settings.profile.width, 320..=7680, 2);
+                field(
+                    ui,
+                    "Height",
+                    &mut self.settings.profile.height,
+                    180..=4320,
+                    2,
+                );
+                field(ui, "Frame rate", &mut self.settings.profile.fps, 1..=240, 1);
+            });
+        ui.checkbox(&mut self.settings.audio_enabled, "Record system audio");
+        ui.checkbox(&mut self.settings.capture_cursor, "Capture cursor");
     }
 
     fn bind_hotkey(&mut self) {
@@ -228,6 +362,9 @@ impl App {
         Ok(folder.join(format!("Veyva-{kind}-{stamp}-{}.mp4", std::process::id())))
     }
     fn save_replay(&mut self) {
+        if self.pending_apply.is_some() || self.pending_command.is_some() || self.closing {
+            return;
+        }
         let ready = self
             .session
             .as_ref()
@@ -237,6 +374,11 @@ impl App {
             self.error = Some("Replay is disabled, still warming up, or already saving".into());
             return;
         }
+        self.pending_saved = self
+            .session
+            .as_ref()
+            .and_then(|s| s.status.lock().ok())
+            .and_then(|s| s.last_saved.clone());
         match self.output_path("replay") {
             Ok(path) => self.send(Command::SaveReplay(path)),
             Err(error) => self.error = Some(error),
@@ -285,7 +427,10 @@ impl App {
                     saved.save(path)
                 });
             match result {
-                Ok(()) => apply_theme(&self.context, self.settings.theme),
+                Ok(()) => {
+                    self.applied.theme = self.settings.theme;
+                    apply_theme(&self.context, self.settings.theme);
+                }
                 Err(error) => {
                     self.settings.theme = previous;
                     self.error = Some(error);
@@ -382,19 +527,17 @@ impl App {
             .and_then(|s| s.status.lock().ok())
             .map(|s| s.clone())
             .unwrap_or_default();
-        let profile = self.settings.profile;
         ui.label(RichText::new("Capture settings").size(18.0).strong());
-        ui.add_space(10.0);
-        readout(
-            ui,
-            "Video quality",
-            &format!("{} × {}", profile.width, profile.height),
+        ui.label(
+            RichText::new("H.264 hardware encoding")
+                .small()
+                .color(p.muted),
         );
-        readout(ui, "Frame rate", &format!("{} fps", profile.fps));
-        readout(ui, "Video codec", "H.264 · Hardware");
-        if ui.small_button("Edit capture preferences").clicked() {
-            self.page = Page::Settings;
-        }
+        ui.add_enabled_ui(
+            self.pending_apply.is_none() && !self.closing && self.load_error.is_none(),
+            |ui| self.quick_capture_settings(ui),
+        );
+        self.apply_controls(ui);
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
@@ -461,7 +604,9 @@ impl App {
             .map(|s| s.clone())
             .unwrap_or_default();
         let active = self.active();
-        let stopping = state.phase.starts_with("Stopping");
+        let stopping = state.phase.starts_with("Stopping")
+            || self.pending_apply.is_some()
+            || self.pending_command.is_some();
         ui.heading("Normal recording");
         ui.label(RichText::new("Record your screen and system audio.").color(p.muted));
         ui.add_space(40.0);
@@ -505,6 +650,7 @@ impl App {
                     && !state.finalizing
                     && !stopping
                     && !self.closing
+                    && self.pending_apply.is_none()
                     && self.load_error.is_none(),
                 Some(p),
             )
@@ -516,7 +662,7 @@ impl App {
                 ui,
                 if state.paused { "Resume" } else { "Pause" },
                 width,
-                state.recording && !state.finalizing && !self.closing,
+                state.recording && !state.finalizing && !self.closing && !stopping,
                 None,
             )
             .clicked()
@@ -531,7 +677,7 @@ impl App {
                 ui,
                 "Finish & save",
                 width,
-                state.recording && !state.finalizing && !self.closing,
+                state.recording && !state.finalizing && !self.closing && !stopping,
                 None,
             )
             .clicked()
@@ -577,7 +723,7 @@ impl App {
             }
             ui.label(format!(
                 "{:.1}s / {}s",
-                state.buffered_seconds, self.settings.profile.history_seconds
+                state.buffered_seconds, self.applied.profile.history_seconds
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if action(
@@ -593,6 +739,7 @@ impl App {
                         && state.buffered_seconds > 0.0
                         && !state.saving
                         && !self.closing
+                        && self.pending_apply.is_none()
                         && !stopping,
                     Some(p),
                 )
@@ -604,7 +751,7 @@ impl App {
         });
         ui.add(
             egui::ProgressBar::new(
-                (state.buffered_seconds / f64::from(self.settings.profile.history_seconds))
+                (state.buffered_seconds / f64::from(self.applied.profile.history_seconds))
                     .clamp(0.0, 1.0) as f32,
             )
             .fill(p.accent)
@@ -615,7 +762,7 @@ impl App {
                 "{}  ·  {:.1} / {} MiB history  ·  {} skipped frames",
                 crate::hotkey::label(self.settings.hotkey_modifiers, self.settings.hotkey_key),
                 state.buffer_bytes as f64 / 1_048_576.0,
-                self.settings.profile.replay_budget_mib,
+                self.applied.profile.replay_budget_mib,
                 state.dropped
             ))
             .small()
@@ -650,28 +797,14 @@ impl App {
         ui.add_space(20.0);
         ui.label(RichText::new("Choose a profile that fits your machine.").color(palette.muted));
         ui.add_space(16.0);
-        let active = self.active();
-        if active {
-            banner(
-                ui,
-                "Stop capture to edit settings. Replay history will be cleared.",
-                palette.accent,
-            );
-            let busy = self
-                .session
-                .as_ref()
-                .and_then(|s| s.status.lock().ok())
-                .is_some_and(|s| s.recording || s.finalizing || s.saving);
-            if ui
-                .add_enabled(!busy, egui::Button::new("Stop capture to edit"))
-                .clicked()
-            {
-                self.send(Command::Stop);
-            }
-        }
-        ui.add_enabled_ui(!active && !self.closing && self.load_error.is_none(), |ui| {
+        ui.label(
+            RichText::new("Changes stay in a shared draft until you apply them.")
+                .small()
+                .color(palette.muted),
+        );
+        ui.add_enabled_ui(self.pending_apply.is_none() && !self.closing && self.load_error.is_none(), |ui| {
             card(ui, |ui| {
-                ui.label(RichText::new("QUALITY PRESET").small().strong().color(palette.muted));
+                ui.label(RichText::new("01 / QUALITY PRESET").small().strong().color(palette.muted));
                 ui.horizontal(|ui| {
                     for (name, profile) in [("Low impact",CaptureProfile::low_end()),("Balanced",CaptureProfile::balanced()),("High quality",CaptureProfile::high())] {
                         if ui.selectable_label(self.settings.profile == profile,name).clicked() { self.settings.profile = profile; }
@@ -682,19 +815,22 @@ impl App {
             });
             ui.add_space(10.0);
             card(ui, |ui| {
+                ui.label(RichText::new("02 / CAPTURE & REPLAY").small().strong().color(palette.muted));
                 egui::Grid::new("capture-settings").num_columns(2).spacing([32.0,18.0]).show(ui, |ui| {
                     field(ui,"Width (pixels)",&mut self.settings.profile.width,320..=7680,2);
                     field(ui,"Height (pixels)",&mut self.settings.profile.height,180..=4320,2);
                     field(ui,"Frame rate (fps)",&mut self.settings.profile.fps,1..=240,1);
                     field(ui,"Video bitrate (kbps)",&mut self.settings.profile.video_kbps,250..=100_000,250);
                     field(ui,"Replay history (seconds)",&mut self.settings.profile.history_seconds,5..=600,5);
-                    field(ui,"History budget (MiB)",&mut self.settings.profile.replay_budget_mib,16..=512,16);
+                    field(ui,"History budget (MiB)",&mut self.applied.profile.replay_budget_mib,16..=512,16);
                     field(ui,"Monitor index (starts at 0)",&mut self.settings.monitor,0..=32,1);
                 });
             });
             ui.add_space(8.0);
             ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. System audio uses the default Windows output device. Microphone capture is not included.").small().color(palette.muted));
             card(ui, |ui| {
+                ui.label(RichText::new("03 / AUDIO & BEHAVIOR").small().strong().color(palette.muted));
+                ui.checkbox(&mut self.settings.capture_cursor,"Capture cursor");
                 ui.checkbox(&mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
                 ui.checkbox(&mut self.settings.audio_enabled,"Record system audio");
                 ui.label(RichText::new("SAVE REPLAY SHORTCUT").small().strong().color(palette.muted));
@@ -708,15 +844,53 @@ impl App {
                     });
                 });
             });
-            if ui.button("Save settings").clicked() {
-                match self.persist() { Ok(()) => { self.bind_hotkey(); self.error = None; self.notice = Some("Settings saved. A new session uses the updated settings.".into()); if self.settings.replay_auto_start {self.start();} }, Err(e) => self.error = Some(e) }
-            }
+
         });
+        self.apply_controls(ui);
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some((kind, target)) = self.pending_command {
+            let state = self
+                .session
+                .as_ref()
+                .and_then(|s| s.status.lock().ok())
+                .map(|s| s.clone())
+                .unwrap_or_default();
+            let acknowledged = match kind {
+                0 => state.recording == target,
+                1 => state.paused == target,
+                2 => state.replay_enabled == target,
+                _ => state.saving || state.last_saved != self.pending_saved,
+            };
+            if acknowledged || !self.active() || state.error != self.pending_error {
+                self.pending_command = None;
+            }
+        }
+        if self.pending_apply.is_some() && !self.active() && !self.closing {
+            let replay_enabled = self.pending_apply.take().unwrap_or(false);
+            let stop_error = self
+                .session
+                .as_ref()
+                .and_then(|s| s.status.lock().ok())
+                .and_then(|s| s.error.clone());
+            self.session = None;
+            self.applied = self.settings;
+            self.bind_hotkey();
+            if let Some(error) = stop_error {
+                self.error = Some(format!("Capture stopped with an error: {error}. Preferences were saved; arm replay to retry."));
+                self.notice = None;
+            } else {
+                self.start();
+                if self.active() {
+                    self.send(Command::SetReplayEnabled(replay_enabled));
+                    self.notice =
+                        Some("Preferences saved. Capture is starting; replay history will warm up again.".into());
+                }
+            }
+        }
         if self.pending_auto_start {
             self.pending_auto_start = false;
             if self.load_error.is_none() {
@@ -731,6 +905,7 @@ impl eframe::App for App {
             .as_ref()
             .is_some_and(|hotkey| hotkey.take_pressed())
             && !self.closing
+            && self.pending_apply.is_none()
         {
             self.save_replay();
         }
@@ -744,7 +919,7 @@ impl eframe::App for App {
         if self.closing && !self.active() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if self.active() || self.closing {
+        if self.active() || self.closing || self.pending_apply.is_some() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         self.titlebar(ctx);
@@ -760,17 +935,21 @@ impl eframe::App for App {
                         .stroke(egui::Stroke::new(1.0_f32, palette.border)),
                 )
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
+                    egui::ScrollArea::vertical()
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                        )
+                        .show(ui, |ui| self.inspector(ui));
                 });
         }
         egui::CentralPanel::default().frame(egui::Frame::none().fill(palette.background).inner_margin(30.0)).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show(ui, |ui| {
                 if self.closing { banner(ui,"Finishing capture and closing safely...", palette.accent); }
                 if let Some(e) = self.load_error.clone() {
                     banner(ui,&format!("Settings could not be loaded: {e}"),CORAL);
                     if ui.button("Reset settings to defaults").clicked() {
                         let result = self.settings_path.as_ref().map_err(Clone::clone).and_then(|p| Settings::default().save(p));
-                        match result { Ok(()) => { self.settings = Settings::default(); apply_theme(ctx, self.settings.theme); self.load_error = None; self.error = None; self.pending_auto_start = true; }, Err(e) => self.error = Some(e) }
+                        match result { Ok(()) => { self.settings = Settings::default(); self.applied = self.settings; apply_theme(ctx, self.settings.theme); self.load_error = None; self.error = None; self.pending_auto_start = true; }, Err(e) => self.error = Some(e) }
                     }
                     ui.add_space(12.0);
                 }
