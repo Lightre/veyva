@@ -1,0 +1,13 @@
+[package]
+name = "veyra"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A lightweight Windows replay recorder - development scaffold"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

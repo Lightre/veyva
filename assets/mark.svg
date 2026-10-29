@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Veyra Replay draft mark">
+  <rect width="128" height="128" rx="30" fill="#10151C"/>
+  <path d="M96 44A38 38 0 1 0 98 81" fill="none" stroke="#70E2BC" stroke-width="9" stroke-linecap="round"/>
+  <path d="M96 25v21H75" fill="none" stroke="#70E2BC" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M54 44v40l32-20z" fill="#EEF4F7"/>
+</svg>
