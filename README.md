@@ -43,7 +43,7 @@ Both background options are **off by default**. Enable them in Preferences when 
 
 - **Keep running in the notification area when closed:** closing the window hides it while the existing session continues.
 - **Start replay in the background when I sign in:** registers the current executable under the current user's Windows startup settings. No Windows service or administrator installation is required.
-- **Quit** from the tray completely stops Veyva. With close-to-tray disabled, closing the window also exits.
+- **Alt+F4** or **Quit** from the tray completely stops Veyva. With close-to-tray disabled, closing the window also exits.
 
 A second launch requests the existing window rather than starting another GUI capture session. Keep the executable in a stable location before enabling startup; moving it requires updating the startup setting. Hidden capture still consumes CPU/GPU/memory, and retained history is lost when the process exits unless saved.
 
@@ -56,6 +56,7 @@ Preferences and diagnostics live under `%LOCALAPPDATA%\Veyva`:
 - `settings.conf`: capture profile, shortcuts, cursor and appearance.
 - `audio.conf`: system output and microphone preferences.
 - `background.conf`: close-to-tray and Windows startup preferences.
+- `window.ron`: native window position, size and maximized state (eframe persistence).
 - `veyva.log`: capture/session diagnostics, rotated at startup after 1 MiB.
 
 ## Resource boundaries and current limitations

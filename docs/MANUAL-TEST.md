@@ -79,3 +79,11 @@ This supersedes Apply/Discard steps above: those buttons have been removed.
 - Verify saved status, persistence failure handling, replay arming state, and normal close/tray behavior.
 
 User-reported acceptance before this change: normal shutdown and tray Show/Save/Quit passed; existing preference persistence passed. Windows sign-in startup remains untested. The microphone report was made without confirmed Apply, so a backend microphone-disable defect was not established.
+
+
+## Window placement and explicit exit
+
+- With no window.ron, launch on a small desktop and check the titlebar/bottom edge stay within the taskbar work area. Resize/move the window, close normally, then reopen: position, size and maximized state should restore.
+- Repeat after changing display scaling or disconnecting the monitor used previously. Startup must keep the normal window within the nearest monitor work area; maximized windows use Windows maximization.
+- Enable close-to-tray: custom titlebar X must hide; Alt+F4 while the application has focus must finalize active capture and exit. Repeat with replay disabled, an active recording and an export. Taskbar Close also requests explicit exit.
+- Verify tray restore and startup/background launch still work. No real window/capture tests were launched by the agent. Window-only persistence is enabled; egui widget memory is not saved.
