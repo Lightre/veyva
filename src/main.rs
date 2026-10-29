@@ -14,6 +14,8 @@ mod diagnostics;
 mod gui;
 #[cfg(windows)]
 mod hotkey;
+#[cfg(windows)]
+mod output;
 mod session;
 mod settings;
 use std::path::PathBuf;
