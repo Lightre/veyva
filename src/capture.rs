@@ -29,6 +29,25 @@ pub type RResult<T> = Result<T, RecorderError>;
 #[path = "windows_capture.rs"]
 mod windows_capture;
 
+pub(crate) fn continuous(
+    settings: crate::settings::Settings,
+    commands: std::sync::mpsc::Receiver<crate::session::Command>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    status: std::sync::Arc<std::sync::Mutex<crate::session::Status>>,
+) -> RResult<()> {
+    #[cfg(windows)]
+    {
+        windows_capture::continuous(settings, commands, stop, status)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (settings, commands, stop, status);
+        Err(RecorderError::Other(
+            "Capture is supported on Windows only".into(),
+        ))
+    }
+}
+
 pub fn run(
     seconds: u32,
     profile: crate::settings::CaptureProfile,

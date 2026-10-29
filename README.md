@@ -2,68 +2,65 @@
 
 **Keep the moment.**
 
-A Windows replay recorder being developed for modest PCs, bounded memory and hardware encoding. Veyva is the selected project brand; no trademark, domain, or exclusivity clearance is claimed.
+A local Windows replay recorder designed around hardware H.264 encoding and bounded encoded history. Veyva is the selected project name; trademark and domain exclusivity have not been established.
 
-## Current milestone
+## Desktop interface
 
-The native command-line backend detects the selected display adapter and its hardware H.264 encoder, then records a short silent 720p/30 FPS MP4. No UI, audio, replay history, tray or global shortcuts are implemented yet. Running without arguments prints help; it never starts recording.
+Run `veyva.exe` or `veyva.exe gui`. The application opens with replay off. Capture shows actual retained history, encoded payload, submitted frames, dropped frames, and session/export errors. Start replay explicitly, wait for history, then save a clip to the selected output folder. Saving runs on a separate worker while capture continues. Stop replay before editing capture settings; the next session starts with empty history.
 
-```powershell
-cargo run --offline -- probe
-cargo run --offline -- record --seconds 10 --monitor 0 --output "C:\Clips\test.mp4"
-```
+The interface uses an ink/mint theme, the Veyva icon, Capture/Settings/About navigation, profile presets and custom settings. Idle rendering is event-driven; an active session refreshes status at most about four times per second. There is no live video preview.
 
-Create the destination directory first. Display indices start at zero across physical adapters. Duration is limited to 1-60 seconds. The output must end in `.mp4`; existing final or temporary files are rejected. The filename ending in `.partial.mp4` is published only after MP4 finalization and file synchronization. A failed export removes its temporary file when possible; forced process termination may leave it behind.
+This milestone captures **silent video**. Audio, tray, global shortcuts, and unlimited manual recording are not implemented. The existing 1-60 second recording command remains available. Closing the window requests stop and waits asynchronously for any export; forced termination or OS shutdown can still interrupt an export.
 
-## Development
+## Build and checks
 
-Requirements: Windows 10 version 1703 or newer, a D3D11-capable display adapter with a compatible hardware H.264 encoder, Rust MSVC and Visual Studio C++ tools/Windows SDK. This milestone is locally tested on one AMD Vega 8 system; other adapters and Windows versions need validation. Unsupported hardware is reported rather than silently switching to CPU encoding.
+Windows, Rust MSVC, Visual Studio C++ tools and the Windows SDK are required. The capture path requires D3D11 and a compatible hardware H.264 encoder. Profile ranges do not guarantee encoder support for every combination. Unsupported configurations fail explicitly rather than using a CPU encoder.
 
 ```powershell
 cargo fmt --check
 cargo test --offline
+cargo clippy --offline -- -D warnings
 cargo build --release --offline
+.\target\release\veyva.exe gui
 ```
 
-`windows` 0.58.0 is the sole direct runtime dependency, pinned to the reference binding version. Offline builds require its transitive packages to be cached. The Windows SDK resource compiler embeds `assets/veyva.ico`; set `VEYVA_RC` to an explicit `rc.exe` path if SDK discovery fails.
+The GUI uses eframe 0.29.1 with the OpenGL renderer and bundled fonts; the Windows API bindings remain pinned to 0.58.0. Offline builds require cached dependencies. The first GUI build is larger and slower than the earlier CLI-only build. The Windows resource compiler embeds `assets/veyva.ico`; set `VEYVA_RC` to an explicit `rc.exe` path if discovery fails. Runtime GUI memory and game FPS impact need new measurements; earlier CLI measurements do not describe GUI overhead.
 
-Logs: `%LOCALAPPDATA%\Veyva\veyva.log`, rotated at startup after 1 MiB to `veyva.previous.log`. Logs include the adapter, encoder, submitted/encoded/skipped frame counts, encoded payload size and MP4 export time. Timestamp prefixes use Unix milliseconds. No footage is uploaded.
+## Settings and command line
 
-## Resource limits and boundaries
-
-- Hardware H.264 only, 1280x720, 30 FPS target and 3 Mbps nominal video bitrate.
-- At most four allocator-owned GPU input surfaces; no CPU pixel readback.
-- Encoded payload is retained for this short-recording milestone, capped at 32 MiB and 3600 samples. This is not a replay ring and is not the total process-memory limit.
-- Nonblocking encoder event reads, a three-second drain deadline and sleeping frame pacing. Late or saturated frame slots are dropped rather than queued without bound.
-- Capture and export currently run in sequence. A future continuous recorder needs a bounded export worker.
-- One selected desktop display; rotated/non-BGRA outputs are rejected. The display is scaled to 16:9; non-16:9 aspect handling and HDR are not validated. Cursor composition is not implemented.
-- Device loss aborts this milestone with a logged error. Automatic recovery, audio and shared replay/manual recording sessions are later work.
-
-## Project map
-
-- `src/windows_capture.rs`: GPU capture/conversion, hardware encoder and MP4 export.
-- `src/main.rs`: explicit probe/record CLI and argument validation.
-- `src/diagnostics.rs`: local logs.
-- `docs/BRAND.md`: brand and future UI direction; `assets/`: icon and theme tokens.
-- `docs/PLAN.md`: remaining implementation and performance validation.
-- `docs/REFERENCE.md`: source review/provenance; `docs/VALIDATION.md`: observed checks.
-
-Selected GPU setup/conversion and encoder negotiation were adapted from the supplied ClipFlow revision. Required MIT notices are retained in source and `docs/CLIPFLOW-LICENSE.txt`. Its application UI, branding and updater configuration were not copied. Original Veyva code has no distribution license selected yet.
-
-## Customizable settings
-
-`veyva settings show` displays the saved profile, settings path, and nominal future replay payload estimate. `veyva settings preset low`, `balanced`, or `high` saves a starting profile. `veyva settings set KEY VALUE` saves a validated individual setting. Supported keys: `width`, `height`, `fps`, `video_kbps`, `history_seconds`, `replay_budget_mib`, and `monitor`.
-
-Settings are stored in `%LOCALAPPDATA%\Veyva\settings.conf` using a versioned UTF-8 key/value format. Missing files use Low End defaults. Invalid files produce an error and are left intact. Saves write/sync a temporary file beside the destination and replace the settings file only after success.
+Settings live at `%LOCALAPPDATA%\Veyva\settings.conf`. A missing file uses Low End defaults; a malformed file is preserved and shown as an error. The GUI provides an explicit reset. Settings saves validate and replace the file after writing/synchronizing a same-directory temporary file.
 
 ```powershell
+.\target\release\veyva.exe settings show
 .\target\release\veyva.exe settings preset balanced
 .\target\release\veyva.exe settings set fps 60
 .\target\release\veyva.exe settings set history_seconds 45
-.\target\release\veyva.exe settings show
+.\target\release\veyva.exe probe
 .\target\release\veyva.exe record --seconds 10 --output "$env:TEMP\veyva-custom-01.mp4" --width 1280 --height 720 --fps 30 --video-kbps 4000
 ```
 
-Record overrides do not alter saved settings. Allowed profile values: even widths 320-7680, even heights 180-4320, FPS 1-240, video bitrate 250-100000 kbps, future replay duration 5-600 seconds, and encoded payload budget 16-512 MiB. These are configuration limits, not promises that every encoder can run every combination. Hardware negotiation can fail explicitly. The short-recording duration limit remains 60 seconds. The encoded sample-count safety cap now accommodates up to 60 seconds at 240 FPS.
+Supported saved keys: `width`, `height`, `fps`, `video_kbps`, `history_seconds`, `replay_budget_mib`, and `monitor`. Presets: `low`, `balanced`, `high`. Record overrides are temporary. GUI output folder selection is currently session-local, defaulting to `%USERPROFILE%\Videos\Veyva`.
 
-Replay duration is stored for the upcoming replay engine and currently does not enable replay capture. The memory budget already limits short-recording payload; a recording that exceeds it fails explicitly. Audio remains unimplemented. Profile changes take effect in the next CLI invocation. There is no GUI yet; this settings model is independent of it.
+Ranges: even widths 320-7680; even heights 180-4320; FPS 1-240; video bitrate 250-100000 kbps; history 5-600 seconds; encoded payload budget 16-512 MiB. The history budget is a limit, not a guarantee of the requested duration. Actual retained seconds can be shorter because of bitrate bursts, keyframe alignment or insufficient memory.
+
+## Capture and resource boundaries
+
+- Selected desktop display -> GPU scaling/NV12 conversion -> hardware H.264 -> keyframe-aligned encoded history.
+- Replay history is bounded by time, payload bytes and packet count. Only one session and one export are allowed. Snapshots share immutable owned packets; COM objects remain on their creating workers.
+- Export reconstruction can temporarily add payload copies. The history budget is not a total-process memory limit; allow roughly up to three history budgets in transient encoded payload plus graphics, encoder and GUI overhead.
+- Frame input uses at most four allocator-owned GPU surfaces. Stale or saturated slots are dropped. No CPU pixel readback or continuous video preview is used.
+- Export writes a temporary MP4, finalizes and synchronizes it, then publishes without replacing an existing file.
+- Rotated/non-BGRA outputs are rejected. Non-16:9 aspect handling, HDR, cursor composition and automatic device-loss recovery remain incomplete/unvalidated.
+
+Logs: `%LOCALAPPDATA%\Veyva\veyva.log`, rotated at startup after 1 MiB. CLI measurements and timings are documented in `docs/VALIDATION.md`; the CPU/memory collector is described in `docs/PERFORMANCE.md`.
+
+## Project map
+
+- `src/gui.rs`: native control window and settings panels.
+- `src/session.rs`: session commands, status and bounded encoded history.
+- `src/windows_capture.rs`: Windows capture, encoding and MP4 export.
+- `src/settings.rs`: validated persistent profiles.
+- `assets/`: SVG source, ICO, PNG preview and design tokens; CSS tokens are a design reference, not a web runtime.
+- `docs/BRAND.md`, `docs/PLAN.md`, `docs/VALIDATION.md`: identity, remaining work and evidence.
+
+Selected capture/conversion and MFT negotiation were adapted from the supplied ClipFlow revision. MIT notices remain in source and `docs/CLIPFLOW-LICENSE.txt`. Original Veyva code has no public distribution license selected yet.

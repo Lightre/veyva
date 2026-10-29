@@ -2,7 +2,7 @@
 
 ## Architecture decision
 
-Use a Rust core with a compact native Windows UI. The UI framework is intentionally undecided until idle memory and redraw cost are compared. Do not import the full Tauri/React application solely to reuse the capture algorithm.
+Use a Rust core with a compact native Windows UI. The native interface now uses eframe/egui with the OpenGL renderer; idle memory and redraw cost still need runtime measurement. Do not import the full Tauri/React application solely to reuse the capture algorithm.
 
 Planned pipeline: selected display -> DXGI/D3D11 -> GPU scale/color conversion -> Media Foundation hardware H.264 -> timestamped encoded history -> MP4 export worker. WASAPI audio must share a monotonic timing model with video. An active manual recording should consume the same encoded stream when compatible.
 
@@ -32,4 +32,12 @@ Mandatory cases: first keyframe, full ring, repeated save, recording plus replay
 
 Milestone 1 has a command-line implementation: selected-display GPU capture, adapter-specific hardware H.264 negotiation, silent short MP4 export and persistent diagnostics. See `VALIDATION.md` for actual observations. The initial scaffold's no-dependency state has been superseded by the pinned Windows API binding dependency.
 
-Milestone 2 is next: a true GOP-aligned replay ring, bounded snapshot ownership, and asynchronous export while capture continues. Do not treat the current short-recording sample collection as that replay ring.
+Milestone 2 now has a dedicated GOP-aligned replay ring and bounded snapshot export separate from the short-recording sample collection. The desktop replay implementation needs manual validation before it is considered runtime verified.
+
+## Desktop replay implementation update
+
+The source now includes an explicit-start native eframe interface and continuous replay session. Encoded history uses keyframe-aligned time/byte/packet eviction; one independent export worker writes a snapshot while capture continues. Session shutdown waits for export on the capture worker while the GUI polls asynchronously. Manual timed CLI capture remains available; unlimited manual recording, audio, tray and hotkeys remain later milestones.
+
+Obsolete one-off scaffolding scripts were archived under ignored `work/archive/scaffolding/`; the obsolete `target/release/veyra.exe` was removed. Private MP4 recordings, measurement CSV/JSON and prior validation evidence were preserved. `assets/theme.css` remains design reference data, not an additional UI runtime.
+
+The initial GUI source/check does not establish visual acceptance or runtime capture correctness. The next user validation must include idle/start/stop, repeated replay saves, playback/seeking, buffer limits, settings persistence, and closing while saving. GUI process memory and gameplay performance must be measured separately from earlier CLI runs.

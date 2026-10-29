@@ -1,5 +1,8 @@
 mod capture;
 mod diagnostics;
+#[cfg(windows)]
+mod gui;
+mod session;
 mod settings;
 use std::path::PathBuf;
 
@@ -82,11 +85,21 @@ fn main() -> std::process::ExitCode {
 }
 fn execute() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.is_empty() || args == ["gui"] {
+        #[cfg(windows)]
+        {
+            return gui::run().map_err(Into::into);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err("The desktop interface requires Windows".into());
+        }
+    }
     if args.first().is_some_and(|arg| arg == "settings") {
         return settings_command(&args[1..]);
     }
     let Some(options) = parse(&args)? else {
-        println!("Veyva - native Windows capture\n\nUsage:\n  veyva probe [--monitor 0]\n  veyva record --output <file.mp4> [--seconds 10] [--monitor 0]\n    [--width 1280] [--height 720] [--fps 30] [--video-kbps 3000]\n    [--buffer-seconds 30] [--buffer-mib 32]\n  veyva settings show\n  veyva settings set <key> <value>\n  veyva settings preset <low|balanced|high>\n\nRecord overrides apply only to that invocation. Silent hardware H.264; recording duration remains limited to 1-60 seconds. Replay history settings are stored for the upcoming replay engine; no replay ring is implemented yet.");
+        println!("Veyva - native Windows capture\n\nUsage:\n  veyva gui\n  veyva probe [--monitor 0]\n  veyva record --output <file.mp4> [--seconds 10] [--monitor 0]\n    [--width 1280] [--height 720] [--fps 30] [--video-kbps 3000]\n    [--buffer-seconds 30] [--buffer-mib 32]\n  veyva settings show\n  veyva settings set <key> <value>\n  veyva settings preset <low|balanced|high>\n\nRecord overrides apply only to that invocation. Silent hardware H.264; recording duration remains limited to 1-60 seconds. Open the desktop interface for continuous replay and saving buffered clips. Audio is not implemented.");
         return Ok(());
     };
     let mut settings = settings::Settings::load(&settings::Settings::default_path()?)?;
@@ -160,7 +173,7 @@ fn settings_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if estimate > f64::from(current.profile.replay_budget_mib) {
         println!("Warning: nominal payload exceeds the memory budget; the future replay engine may retain less history.");
     }
-    println!("Replay duration is stored only. Audio is not implemented. Actual encoder support must be negotiated on the target hardware.");
+    println!("Replay settings apply when starting a desktop replay session. Audio is not implemented. Actual encoder support must be negotiated on the target hardware.");
     Ok(())
 }
 

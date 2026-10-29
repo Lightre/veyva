@@ -128,6 +128,7 @@ enum Codec {
 struct EncoderInfo {
     friendly_name: String,
 }
+#[derive(Clone)]
 struct VideoFormatHeader {
     width: u32,
     height: u32,
@@ -136,6 +137,308 @@ struct VideoFormatHeader {
     bitrate: u32,
     profile: u32,
     sequence_header: Vec<u8>,
+}
+
+/// Capture and encoding stay on this COM apartment. Only owned encoded bytes
+/// enter the exporter, whose Media Foundation objects are created on its thread.
+pub(super) fn continuous(
+    settings: crate::settings::Settings,
+    commands: std::sync::mpsc::Receiver<crate::session::Command>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    status: std::sync::Arc<std::sync::Mutex<crate::session::Status>>,
+) -> RResult<()> {
+    use crate::session::{Command, History, Packet};
+    use std::sync::atomic::Ordering;
+    let _mf = MfSession::new()?;
+    let profile = settings.profile;
+    let gfx = GraphicsStack::create(settings.monitor)?;
+    let mut encoder = HardwareEncoder::create(
+        &gfx.device,
+        profile.width,
+        profile.height,
+        profile.fps,
+        profile.video_kbps,
+        Codec::H264,
+    )?;
+    let converter = ColorConverter::new(
+        &gfx.device,
+        &gfx.context,
+        gfx.src_width,
+        gfx.src_height,
+        profile.width,
+        profile.height,
+        profile.fps,
+    )?;
+    let pool = allocator(&encoder._dxgi_manager, profile)?;
+    let budget = u64::from(profile.replay_budget_mib) * 1024 * 1024;
+    let mut history = History::new(budget, profile.history_seconds);
+    let mut packets = Packets {
+        samples: Vec::new(),
+        bytes: 0,
+        limit: budget,
+    };
+    struct ExportGuard(Option<std::thread::JoinHandle<()>>);
+    impl Drop for ExportGuard {
+        fn drop(&mut self) {
+            if let Some(worker) = self.0.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+    let mut export = ExportGuard(None);
+    let interval = Duration::from_secs_f64(1.0 / f64::from(profile.fps));
+    let mut deadline = Instant::now();
+    let mut timer = FrameTimer::new().ok();
+    let mut slot = 0u64;
+    let mut submitted = 0u64;
+    let mut dropped = 0u64;
+    let mut have_frame = false;
+    let mut last_packet_time = None;
+    status.lock().unwrap_or_else(|e| e.into_inner()).phase = "Buffering (silent video)".into();
+    while !stop.load(Ordering::Acquire) {
+        if export.0.as_ref().is_some_and(|worker| worker.is_finished()) {
+            let _ = export.0.take().unwrap().join();
+        }
+        for _ in 0..4 {
+            let command = match commands.try_recv() {
+                Ok(command) => command,
+                Err(_) => break,
+            };
+            match command {
+                Command::Stop => {
+                    stop.store(true, Ordering::Release);
+                }
+                Command::SaveReplay(path) => {
+                    if export.0.is_some() {
+                        status.lock().unwrap_or_else(|e| e.into_inner()).error =
+                            Some("A replay export is already in progress".into());
+                        continue;
+                    }
+                    let snapshot = history.snapshot();
+                    if snapshot.len() < 2 {
+                        status.lock().unwrap_or_else(|e| e.into_inner()).error =
+                            Some("Not enough keyframe-aligned history yet".into());
+                        continue;
+                    }
+                    // Refresh the codec header after the encoder has emitted output.
+                    unsafe {
+                        let media_type = encoder.transform.GetOutputCurrentType(0).map_err(hr)?;
+                        if let Ok(size) = media_type.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) {
+                            if size > 1024 * 1024 {
+                                return Err(RecorderError::Other(
+                                    "Invalid codec header size".into(),
+                                ));
+                            }
+                            encoder.header.sequence_header.resize(size as usize, 0);
+                            media_type
+                                .GetBlob(
+                                    &MF_MT_MPEG_SEQUENCE_HEADER,
+                                    &mut encoder.header.sequence_header,
+                                    None,
+                                )
+                                .map_err(hr)?;
+                        }
+                    }
+                    let header = encoder.header.clone();
+                    let shared = status.clone();
+                    {
+                        let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        state.saving = true;
+                        state.error = None;
+                    }
+                    export.0 = Some(
+                        std::thread::Builder::new()
+                            .name("veyva-export".into())
+                            .spawn(move || {
+                                let result = export_snapshot(&path, &header, snapshot);
+                                let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+                                state.saving = false;
+                                match result {
+                                    Ok(()) => state.last_saved = Some(path),
+                                    Err(error) => state.error = Some(error.to_string()),
+                                }
+                            })
+                            .map_err(|e| RecorderError::Other(e.to_string()))?,
+                    );
+                }
+            }
+        }
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+            if !timer
+                .as_ref()
+                .is_some_and(|timer| timer.wait(delay).is_ok())
+            {
+                timer = None;
+                if let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+                    std::thread::sleep(remaining);
+                }
+            }
+        }
+        let late = Instant::now()
+            .saturating_duration_since(deadline)
+            .as_nanos()
+            / interval.as_nanos();
+        let skipped = late.min(u64::MAX as u128) as u64;
+        slot = slot.saturating_add(skipped);
+        dropped = dropped.saturating_add(skipped);
+        deadline += interval.mul_f64((skipped + 1) as f64);
+        encoder.drain(&mut packets)?;
+        unsafe {
+            for sample in packets.samples.drain(..) {
+                let time = sample.GetSampleTime().map_err(hr)?;
+                if last_packet_time.is_some_and(|previous| previous >= time) {
+                    return Err(RecorderError::Other(
+                        "Encoder produced reordered timestamps; B frames are unsupported".into(),
+                    ));
+                }
+                last_packet_time = Some(time);
+                let buffer = sample.ConvertToContiguousBuffer().map_err(hr)?;
+                let mut pointer = std::ptr::null_mut();
+                let mut length = 0;
+                buffer
+                    .Lock(&mut pointer, None, Some(&mut length))
+                    .map_err(hr)?;
+                let data = std::sync::Arc::<[u8]>::from(std::slice::from_raw_parts(
+                    pointer,
+                    length as usize,
+                ));
+                buffer.Unlock().map_err(hr)?;
+                history.push(Packet {
+                    data,
+                    time,
+                    duration: sample.GetSampleDuration().map_err(hr)?,
+                    keyframe: sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0,
+                });
+            }
+            packets.bytes = 0;
+            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut resource = None;
+            match gfx
+                .duplication
+                .AcquireNextFrame(0, &mut info, &mut resource)
+            {
+                Ok(()) => {
+                    let converted = (|| {
+                        let texture: ID3D11Texture2D = resource
+                            .ok_or_else(|| RecorderError::Other("Empty desktop frame".into()))?
+                            .cast()
+                            .map_err(hr)?;
+                        converter.convert(&texture)
+                    })();
+                    let released = gfx.duplication.ReleaseFrame().map_err(hr);
+                    converted?;
+                    released?;
+                    have_frame = true;
+                }
+                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
+                Err(error) => return Err(hr(error)),
+            }
+            if have_frame {
+                match pool.AllocateSample() {
+                    Ok(sample) => {
+                        let dxgi: IMFDXGIBuffer =
+                            sample.GetBufferByIndex(0).map_err(hr)?.cast().map_err(hr)?;
+                        let mut raw = std::ptr::null_mut();
+                        dxgi.GetResource(&ID3D11Texture2D::IID, &mut raw)
+                            .map_err(hr)?;
+                        let target = ID3D11Texture2D::from_raw(raw);
+                        gfx.context.CopyResource(&target, &converter.nv12);
+                        let pts = super::frame_time(slot, profile.fps);
+                        sample.SetSampleTime(pts).map_err(hr)?;
+                        sample
+                            .SetSampleDuration(super::frame_time(slot + 1, profile.fps) - pts)
+                            .map_err(hr)?;
+                        if encoder.submit(&sample)? {
+                            submitted += 1;
+                        } else {
+                            dropped += 1;
+                        }
+                    }
+                    Err(error) if error.code() == MF_E_SAMPLEALLOCATOR_EMPTY => dropped += 1,
+                    Err(error) => return Err(hr(error)),
+                }
+            } else {
+                dropped += 1;
+            }
+        }
+        slot += 1;
+        let mut state = status.lock().unwrap_or_else(|e| e.into_inner());
+        state.buffered_seconds = history.seconds();
+        state.buffer_bytes = history.bytes;
+        state.submitted = submitted;
+        state.dropped = dropped;
+    }
+    status.lock().unwrap_or_else(|e| e.into_inner()).phase = "Stopping".into();
+    // ExportGuard waits here or during error unwinding, on the capture thread.
+    // The GUI never joins an unfinished capture worker.
+    Ok(())
+}
+
+fn export_snapshot(
+    path: &Path,
+    header: &VideoFormatHeader,
+    snapshot: Vec<crate::session::Packet>,
+) -> RResult<()> {
+    let _mf = MfSession::new()?;
+    let temporary = path.with_extension("partial.mp4");
+    if path.exists() {
+        return Err(RecorderError::Other("Output file already exists".into()));
+    }
+    let reservation = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    drop(reservation);
+    let result = (|| {
+        let mut packets = Packets {
+            samples: Vec::with_capacity(snapshot.len()),
+            bytes: 0,
+            limit: u64::MAX,
+        };
+        unsafe {
+            for packet in snapshot {
+                let sample = MFCreateSample().map_err(hr)?;
+                let buffer = MFCreateMemoryBuffer(packet.data.len() as u32).map_err(hr)?;
+                let mut pointer = std::ptr::null_mut();
+                buffer.Lock(&mut pointer, None, None).map_err(hr)?;
+                std::ptr::copy_nonoverlapping(packet.data.as_ptr(), pointer, packet.data.len());
+                buffer.Unlock().map_err(hr)?;
+                buffer
+                    .SetCurrentLength(packet.data.len() as u32)
+                    .map_err(hr)?;
+                sample.AddBuffer(&buffer).map_err(hr)?;
+                sample.SetSampleTime(packet.time).map_err(hr)?;
+                sample.SetSampleDuration(packet.duration).map_err(hr)?;
+                sample
+                    .SetUINT32(&MFSampleExtension_CleanPoint, u32::from(packet.keyframe))
+                    .map_err(hr)?;
+                packets.samples.push(sample);
+            }
+        }
+        mux(&temporary, header, &packets)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)?
+            .sync_all()?;
+        let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe {
+            windows::Win32::Storage::FileSystem::MoveFileExW(
+                PCWSTR(source.as_ptr()),
+                PCWSTR(destination.as_ptr()),
+                windows::Win32::Storage::FileSystem::MOVE_FILE_FLAGS(0),
+            )
+            .map_err(hr)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 struct GraphicsStack {
     pub device: ID3D11Device,

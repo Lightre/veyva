@@ -55,3 +55,9 @@ Raw CSV/JSON, process log and private footage are in ignored `work/measurement-2
 ## Persistent settings foundation
 
 Added a validated, versioned settings model shared by the CLI and native capture backend. Unit tests cover strict parsing, profile validation, atomic in-memory updates, and save/load/replacement in a temporary directory. Eleven tests passed during integration. No live recording with custom profiles has been performed; supported ranges are configuration bounds and require encoder negotiation. Replay history configuration is persisted but replay capture is not implemented yet.
+
+## Native GUI and continuous replay source validation
+
+The native GUI and continuous replay backend pass the integrated offline compile and Clippy check with warnings denied. Three standalone History tests passed for GOP-aligned byte eviction, time/short-history/snapshot retention, and oversized-GOP rejection. The complete GUI-linked test suite was not run because the first dependency code generation is lengthy; a release build is delegated to the user. No new GUI or continuous replay capture was launched by the agent.
+
+Manual acceptance is in `docs/MANUAL-TEST.md`. Prior CLI playback, memory and CPU measurements do not verify the new GUI/replay behavior. Audio, global shortcuts, tray and unlimited manual recording remain unavailable.
