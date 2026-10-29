@@ -39,3 +39,10 @@ These are pending runtime checks; compile success is not playback or visual acce
 - Use the folder icon to choose a destination using the native folder picker. Cancel must preserve the existing path. The adjacent arrow opens the existing destination in Explorer. Manual path editing remains available.
 - Start recording: the main button becomes red Finish & save; Pause becomes Resume after pausing. Finish from either active or paused recording and verify MP4 playback. Saving disables transport until completion.
 - Verify repeated clicks cannot enqueue conflicting recording commands. Replay saving remains independent.
+
+
+## Keyboard shortcuts and filenames
+
+- Preferences / Keyboard shortcuts: click each binding and enter a modifier plus key. Escape cancels; duplicate combinations are rejected. Save shortcuts, restart and verify persistence. OS-reserved combinations must show registration errors.
+- While assigning, verify no recording/replay action fires and typing does not edit other fields. Verify Ctrl+Shift+R starts/finishes recording, Ctrl+Shift+P pauses/resumes, and Alt+F1 saves replay while another application has focus.
+- Verify recording status has a drawn dot with no missing-font square. Verify filenames include local calendar date/time and retain unique suffixes.

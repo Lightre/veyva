@@ -129,7 +129,9 @@ struct App {
     session: Option<Session>,
     closing: bool,
     context: egui::Context,
-    hotkey: Option<crate::hotkey::Hotkey>,
+    hotkeys: Vec<(u8, crate::hotkey::Hotkey)>,
+    listening_shortcut: Option<u8>,
+    restore_shortcuts: bool,
     shortcut_error: Option<String>,
     pending_auto_start: bool,
 }
@@ -183,7 +185,9 @@ impl App {
             session: None,
             closing: false,
             context: cc.egui_ctx.clone(),
-            hotkey: None,
+            hotkeys: Vec::new(),
+            listening_shortcut: None,
+            restore_shortcuts: false,
             shortcut_error: None,
             pending_auto_start: true,
         }
@@ -348,18 +352,205 @@ impl App {
     }
 
     fn bind_hotkey(&mut self) {
-        self.hotkey = None;
+        self.hotkeys.clear();
         self.shortcut_error = None;
-        let ctx = self.context.clone();
-        match crate::hotkey::Hotkey::register(
-            self.settings.hotkey_modifiers,
-            self.settings.hotkey_key,
-            std::sync::Arc::new(move || ctx.request_repaint()),
-        ) {
-            Ok(key) => self.hotkey = Some(key),
-            Err(error) => self.shortcut_error = Some(error),
+        for (kind, modifiers, key) in [
+            (
+                0,
+                self.applied.record_hotkey_modifiers,
+                self.applied.record_hotkey_key,
+            ),
+            (
+                1,
+                self.applied.pause_hotkey_modifiers,
+                self.applied.pause_hotkey_key,
+            ),
+            (2, self.applied.hotkey_modifiers, self.applied.hotkey_key),
+        ] {
+            let ctx = self.context.clone();
+            match crate::hotkey::Hotkey::register(
+                modifiers,
+                key,
+                std::sync::Arc::new(move || ctx.request_repaint()),
+            ) {
+                Ok(hotkey) => self.hotkeys.push((kind, hotkey)),
+                Err(error) => {
+                    let errors = self.shortcut_error.get_or_insert_with(String::new);
+                    if !errors.is_empty() {
+                        errors.push_str("; ");
+                    }
+                    errors.push_str(&error);
+                }
+            }
         }
     }
+
+    fn shortcuts(&mut self, ui: &mut egui::Ui) {
+        let palette = Palette::for_theme(self.settings.theme);
+        card(ui, |ui| {
+            ui.label(
+                RichText::new("04 / KEYBOARD SHORTCUTS")
+                    .small()
+                    .strong()
+                    .color(palette.muted),
+            );
+            ui.label("Click a binding, then press your key combination. Escape cancels.");
+            ui.label(RichText::new("Use Ctrl, Alt, Shift or Win with a letter, number, function or navigation key.").small().color(palette.muted));
+            for (kind, title, hint, modifiers, key) in [
+                (
+                    0,
+                    "Start / finish recording",
+                    "Finish saves the current recording.",
+                    self.settings.record_hotkey_modifiers,
+                    self.settings.record_hotkey_key,
+                ),
+                (
+                    1,
+                    "Pause / resume recording",
+                    "Available while recording.",
+                    self.settings.pause_hotkey_modifiers,
+                    self.settings.pause_hotkey_key,
+                ),
+                (
+                    2,
+                    "Save replay",
+                    "Save the buffered moments.",
+                    self.settings.hotkey_modifiers,
+                    self.settings.hotkey_key,
+                ),
+            ] {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(title).strong());
+                        ui.label(RichText::new(hint).small().color(palette.muted));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if self.listening_shortcut == Some(kind) {
+                            "Press shortcut...".into()
+                        } else {
+                            crate::hotkey::label(modifiers, key)
+                        };
+                        if ui
+                            .add_sized([160.0, 36.0], egui::Button::new(label))
+                            .clicked()
+                        {
+                            self.hotkeys.clear();
+                            self.listening_shortcut = Some(kind);
+                            self.restore_shortcuts = false;
+                        }
+                    });
+                });
+            }
+            ui.add_space(12.0);
+            if ui
+                .add_enabled(
+                    self.listening_shortcut.is_none() && !self.closing,
+                    egui::Button::new("Save shortcuts"),
+                )
+                .clicked()
+            {
+                let result = self.settings.validate().and_then(|_| {
+                    if self.load_error.is_some() {
+                        return Err("Reset unreadable settings first".into());
+                    }
+                    let path = self.settings_path.as_ref().map_err(Clone::clone)?;
+                    let mut saved = Settings::load(path)?;
+                    copy_shortcuts(&mut saved, &self.settings);
+                    saved.save(path)
+                });
+                match result {
+                    Ok(()) => {
+                        let draft = self.settings;
+                        copy_shortcuts(&mut self.applied, &draft);
+                        self.bind_hotkey();
+                        self.notice = Some("Keyboard shortcuts saved.".into());
+                        self.error = None;
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            if let Some(error) = &self.shortcut_error {
+                banner(ui, error, CORAL);
+            }
+        });
+    }
+
+    fn listen_for_shortcut(&mut self, ctx: &egui::Context) {
+        if let Some(kind) = self.listening_shortcut {
+            let events = ctx.input(|i| i.events.clone());
+            ctx.input_mut(|i| {
+                i.events.retain(|event| {
+                    !matches!(event, egui::Event::Key { .. } | egui::Event::Text(_))
+                })
+            });
+            if !ctx.input(|i| i.focused) {
+                self.listening_shortcut = None;
+                self.restore_shortcuts = true;
+            } else {
+                for event in events {
+                    if let egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } = event
+                    {
+                        if key == egui::Key::Escape {
+                            self.listening_shortcut = None;
+                            self.restore_shortcuts = true;
+                            break;
+                        }
+                        let mods = u32::from(modifiers.alt)
+                            | (u32::from(modifiers.ctrl) << 1)
+                            | (u32::from(modifiers.shift) << 2)
+                            | (u32::from(unsafe {
+                                use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+                                GetAsyncKeyState(0x5b) < 0 || GetAsyncKeyState(0x5c) < 0
+                            }) << 3);
+                        if let Some(vk) = shortcut_key(key) {
+                            let mut candidate = self.settings;
+                            match kind {
+                                0 => {
+                                    candidate.record_hotkey_modifiers = mods;
+                                    candidate.record_hotkey_key = vk;
+                                }
+                                1 => {
+                                    candidate.pause_hotkey_modifiers = mods;
+                                    candidate.pause_hotkey_key = vk;
+                                }
+                                _ => {
+                                    candidate.hotkey_modifiers = mods;
+                                    candidate.hotkey_key = vk;
+                                }
+                            }
+                            match candidate.validate() {
+                                Ok(()) => {
+                                    self.settings = candidate;
+                                    self.error = None;
+                                    self.listening_shortcut = None;
+                                    self.restore_shortcuts = true;
+                                }
+                                Err(error) => self.error = Some(error),
+                            }
+                        } else {
+                            self.error =
+                                Some("This key is not supported for global shortcuts.".into());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if self.restore_shortcuts
+            && ctx.input(|i| i.keys_down.is_empty() && i.modifiers == egui::Modifiers::NONE)
+        {
+            self.restore_shortcuts = false;
+            self.bind_hotkey();
+        }
+    }
+
     fn output_path(&self, kind: &str) -> Result<PathBuf, String> {
         let folder = PathBuf::from(self.output.trim());
         if !folder.is_absolute() {
@@ -371,7 +562,18 @@ impl App {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
-        Ok(folder.join(format!("Veyva-{kind}-{stamp}-{}.mp4", std::process::id())))
+        let local = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+        Ok(folder.join(format!(
+            "Veyva-{kind}-{:04}-{:02}-{:02}_{:02}-{:02}-{:02}-{:03}-{stamp}-{}.mp4",
+            local.wYear,
+            local.wMonth,
+            local.wDay,
+            local.wHour,
+            local.wMinute,
+            local.wSecond,
+            local.wMilliseconds,
+            std::process::id()
+        )))
     }
     fn save_replay(&mut self) {
         if self.pending_apply.is_some() || self.pending_command.is_some() || self.closing {
@@ -555,7 +757,7 @@ impl App {
         ui.add_space(8.0);
         ui.label(RichText::new("Audio").size(18.0).strong());
         let label = if state.audio_active {
-            "● System audio active"
+            "System audio active"
         } else if self.active() && self.settings.audio_enabled {
             "System audio starting / unavailable"
         } else if self.settings.audio_enabled {
@@ -674,13 +876,22 @@ impl App {
             } else {
                 "Ready to record"
             };
-            ui.label(
-                RichText::new(format!("●  {label}")).color(if state.recording {
-                    p.accent
-                } else {
-                    p.muted
-                }),
-            );
+            ui.horizontal(|ui| {
+                let galley = ui.painter().layout_no_wrap(
+                    label.to_owned(),
+                    egui::FontId::proportional(14.0),
+                    p.muted,
+                );
+                let width = galley.size().x + 20.0;
+                ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 16.0), egui::Sense::hover());
+                ui.painter().circle_filled(
+                    rect.center(),
+                    3.5,
+                    if state.recording { p.accent } else { p.muted },
+                );
+                ui.label(label);
+            });
         });
         ui.add_space(42.0);
         ui.horizontal(|ui| {
@@ -807,7 +1018,7 @@ impl App {
         ui.label(
             RichText::new(format!(
                 "{}  ·  {:.1} / {} MiB history  ·  {} skipped frames",
-                crate::hotkey::label(self.settings.hotkey_modifiers, self.settings.hotkey_key),
+                crate::hotkey::label(self.applied.hotkey_modifiers, self.applied.hotkey_key),
                 state.buffer_bytes as f64 / 1_048_576.0,
                 self.applied.profile.replay_budget_mib,
                 state.dropped
@@ -869,7 +1080,7 @@ impl App {
                     field(ui,"Frame rate (fps)",&mut self.settings.profile.fps,1..=240,1);
                     field(ui,"Video bitrate (kbps)",&mut self.settings.profile.video_kbps,250..=100_000,250);
                     field(ui,"Replay history (seconds)",&mut self.settings.profile.history_seconds,5..=600,5);
-                    field(ui,"History budget (MiB)",&mut self.applied.profile.replay_budget_mib,16..=512,16);
+                    field(ui,"History budget (MiB)",&mut self.settings.profile.replay_budget_mib,16..=512,16);
                     field(ui,"Monitor index (starts at 0)",&mut self.settings.monitor,0..=32,1);
                 });
             });
@@ -880,19 +1091,12 @@ impl App {
                 setting_checkbox(ui, &mut self.settings.capture_cursor,"Capture cursor");
                 setting_checkbox(ui, &mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
                 setting_checkbox(ui, &mut self.settings.audio_enabled,"Record system audio");
-                ui.label(RichText::new("SAVE REPLAY SHORTCUT").small().strong().color(palette.muted));
-                ui.horizontal(|ui|{
-                    for (flag,label) in [(1,"Alt"),(2,"Ctrl"),(4,"Shift"),(8,"Win")] {
-                        let mut enabled=self.settings.hotkey_modifiers&flag!=0;
-                        if setting_checkbox(ui, &mut enabled,label).changed(){if enabled{self.settings.hotkey_modifiers|=flag;}else{self.settings.hotkey_modifiers&=!flag;}}
-                    }
-                    egui::ComboBox::from_id_salt("hotkey-key").selected_text(format!("F{}",self.settings.hotkey_key-0x70+1)).show_ui(ui,|ui|{
-                        for key in 0x70..=0x7B {ui.selectable_value(&mut self.settings.hotkey_key,key,format!("F{}",key-0x70+1));}
-                    });
-                });
+
             });
 
         });
+        ui.add_space(12.0);
+        self.shortcuts(ui);
         self.apply_controls(ui);
     }
 }
@@ -964,14 +1168,47 @@ impl eframe::App for App {
                 }
             }
         }
-        if self
-            .hotkey
-            .as_ref()
-            .is_some_and(|hotkey| hotkey.take_pressed())
+        self.listen_for_shortcut(ctx);
+        let pressed: Vec<u8> = self
+            .hotkeys
+            .iter()
+            .filter_map(|(kind, key)| key.take_pressed().then_some(*kind))
+            .collect();
+        if self.listening_shortcut.is_none()
+            && !self.restore_shortcuts
             && !self.closing
             && self.pending_apply.is_none()
+            && self.pending_command.is_none()
         {
-            self.save_replay();
+            if let Some(kind) = pressed.first() {
+                let state = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.status.lock().ok())
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                if !state.finalizing
+                    && state.phase != "Starting"
+                    && !state.phase.starts_with("Stopping")
+                {
+                    match kind {
+                        0 => {
+                            if state.recording {
+                                self.send(Command::FinishRecording);
+                            } else {
+                                self.start_recording();
+                            }
+                        }
+                        1 if state.recording => self.send(if state.paused {
+                            Command::ResumeRecording
+                        } else {
+                            Command::PauseRecording
+                        }),
+                        2 => self.save_replay(),
+                        _ => {}
+                    }
+                }
+            }
         }
         if ctx.input(|i| i.viewport().close_requested()) && self.active() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1377,4 +1614,44 @@ fn choose_output_folder() -> Result<Option<String>, String> {
         })();
         result.map_err(|e| format!("Could not choose folder: {e}"))
     }
+}
+
+fn copy_shortcuts(target: &mut Settings, source: &Settings) {
+    target.hotkey_modifiers = source.hotkey_modifiers;
+    target.hotkey_key = source.hotkey_key;
+    target.record_hotkey_modifiers = source.record_hotkey_modifiers;
+    target.record_hotkey_key = source.record_hotkey_key;
+    target.pause_hotkey_modifiers = source.pause_hotkey_modifiers;
+    target.pause_hotkey_key = source.pause_hotkey_key;
+}
+
+fn shortcut_key(key: egui::Key) -> Option<u32> {
+    let name = key.name();
+    if name.len() == 1 {
+        let byte = name.as_bytes()[0];
+        if byte.is_ascii_uppercase() || byte.is_ascii_digit() {
+            return Some(u32::from(byte));
+        }
+    }
+    if let Some(number) = name.strip_prefix('F').and_then(|s| s.parse::<u32>().ok()) {
+        if (1..=24).contains(&number) {
+            return Some(0x6f + number);
+        }
+    }
+    Some(match key {
+        egui::Key::Space => 0x20,
+        egui::Key::Enter => 0x0d,
+        egui::Key::Tab => 0x09,
+        egui::Key::ArrowLeft => 0x25,
+        egui::Key::ArrowUp => 0x26,
+        egui::Key::ArrowRight => 0x27,
+        egui::Key::ArrowDown => 0x28,
+        egui::Key::Insert => 0x2d,
+        egui::Key::Delete => 0x2e,
+        egui::Key::Home => 0x24,
+        egui::Key::End => 0x23,
+        egui::Key::PageUp => 0x21,
+        egui::Key::PageDown => 0x22,
+        _ => return None,
+    })
 }
