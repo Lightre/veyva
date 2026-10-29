@@ -1,7 +1,7 @@
 //! Selected render loopback and optional microphone, mixed as 48 kHz stereo PCM.
 //! AAC setup adapted from ClipFlow src-tauri/src/media/audio.rs,
 //! revision d204de138d503d2eb41fcb2af553aa2430f0a78b (MIT).
-//! Copyright (c) 2026 jaimitus. See docs/CLIPFLOW-LICENSE.txt for the MIT license.
+//! Copyright (c) 2026 jaimitus. See THIRD_PARTY_NOTICES.txt for the MIT license.
 
 use std::{
     sync::{

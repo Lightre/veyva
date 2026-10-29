@@ -2,3 +2,15 @@
 *.mp4
 *.log
 /work/
+
+# Local settings, credentials and editor state
+.env
+.env.*
+!.env.example
+*.local
+*.tmp
+*.conf
+.vs/
+.idea/
+__pycache__/
+*.pyc

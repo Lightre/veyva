@@ -1,6 +1,7 @@
-# ClipFlow reference review
+# Upstream provenance
 
-Local checkout: `C:\Projects\.tools\clipflow`
+This document records the initial reference review and subsequent adaptation notes. Historical implementation descriptions are not the current feature list; see the repository README.
+
 Revision inspected: `d204de138d503d2eb41fcb2af553aa2430f0a78b`
 Manifest version: `1.4.2`
 Review date: 2026-10-29
@@ -16,12 +17,12 @@ The README advertises sub-50ms saves and low RAM usage. We have not built or run
 
 ## Reuse policy
 
-The checked-out LICENSE is MIT, copyright (c) 2026 jaimitus. Preserve that copyright and the full license text with any copied or substantially adapted source. The original license is retained in `docs/CLIPFLOW-LICENSE.txt` for future reuse.
+The checked-out LICENSE is MIT, copyright (c) 2026 jaimitus. Preserve that copyright and the full license text with any copied or substantially adapted source. The original license is retained in `THIRD_PARTY_NOTICES.txt` for the adapted portions.
 
 The initial scaffold included no reference source code or artwork; the native implementation now adapts the sections documented below. Do not copy upstream updater endpoints, signing keys, application identifiers, branding or release configuration. This repository currently has no distribution license assigned to its original code; select one before public distribution.
 # Source and implementation notes
 
-The native backend was added after the initial scaffold. `src/windows_capture.rs` adapts GPU setup, video processing and Media Foundation encoder negotiation from the supplied ClipFlow revision listed above. The original MIT copyright/license is retained in source and `docs/CLIPFLOW-LICENSE.txt`.
+The native backend was added after the initial scaffold. `src/windows_capture.rs` adapts GPU setup, video processing and Media Foundation encoder negotiation from the supplied ClipFlow revision listed above. The original MIT copyright/license is retained in source and `THIRD_PARTY_NOTICES.txt`.
 
 The new standalone path uses adapter-specific MFTEnum2 enumeration, hardware-only encoding, bounded allocator-owned input surfaces, nonblocking event reads, explicit drain/finalization, bounded encoded sample retention, and non-overwriting temporary-file publication. Audio and the reference application's Tauri/React UI were not imported. This is a short-recording backend, not the completed replay engine.
 

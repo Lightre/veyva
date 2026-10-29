@@ -1,5 +1,7 @@
 # Implementation plan
 
+This file preserves milestone history. The README is the current feature overview; VALIDATION.md separates implemented behavior from runtime evidence. Microphone/device selection, shortcuts and tray/startup now have implementations and pending manual acceptance.
+
 ## Architecture decision
 
 Use a Rust core with a compact native Windows UI. The native interface now uses eframe/egui with the OpenGL renderer; idle memory and redraw cost still need runtime measurement. Do not import the full Tauri/React application solely to reuse the capture algorithm.

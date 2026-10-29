@@ -1,5 +1,5 @@
 // GPU setup/conversion and MFT negotiation adapted from ClipFlow.
-// Copyright (c) 2026 jaimitus. MIT; see docs/CLIPFLOW-LICENSE.txt.
+// Copyright (c) 2026 jaimitus. MIT; see THIRD_PARTY_NOTICES.txt.
 use super::{RResult, RecorderError};
 use crate::{diagnostics::Logger, settings::CaptureProfile};
 use std::{

@@ -1,3 +1,16 @@
+Veyva - Third-party notices
+==========================
+
+ClipFlow
+--------
+Source: https://github.com/jaimitus/ClipFlow
+Revision: d204de138d503d2eb41fcb2af553aa2430f0a78b
+Adapted portions: D3D11 GPU setup/conversion and Media Foundation encoder
+negotiation in src/windows_capture.rs; AAC encoder setup in src/audio.rs.
+The following license applies to those upstream portions. It does not grant
+a license to original Veyva code. Other Rust dependencies retain their own
+licenses; this notice does not replace a distribution dependency audit.
+
 MIT License
 
 Copyright (c) 2026 jaimitus
