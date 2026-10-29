@@ -298,7 +298,12 @@ impl App {
             .frame(
                 egui::Frame::none()
                     .fill(p.background)
-                    .inner_margin(egui::Margin::symmetric(22.0, 14.0)),
+                    .inner_margin(egui::Margin {
+                        left: 22.0,
+                        right: 0.0,
+                        top: 14.0,
+                        bottom: 14.0,
+                    }),
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
@@ -330,43 +335,38 @@ impl App {
                             self.page = page;
                         }
                     }
-                    let drag_size = Vec2::new((ui.available_width() - 140.0).max(0.0), 40.0);
-                    let drag = ui.allocate_response(drag_size, egui::Sense::click_and_drag());
-                    if drag.double_clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(
-                            !ctx.input(|i| i.viewport().maximized.unwrap_or(false)),
-                        ));
-                    } else if drag.drag_started_by(egui::PointerButton::Primary) {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                    }
-                    if ui
-                        .add(egui::Button::new("—").frame(false))
-                        .on_hover_text("Minimize")
-                        .clicked()
-                    {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    }
-                    if ui
-                        .add(egui::Button::new("□").frame(false))
-                        .on_hover_text("Maximize / Restore")
-                        .clicked()
-                    {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(
-                            !ctx.input(|i| i.viewport().maximized.unwrap_or(false)),
-                        ));
-                    }
-                    if ui
-                        .add(egui::Button::new("×").frame(false))
-                        .on_hover_text("Close")
-                        .clicked()
-                    {
-                        if self.active() {
-                            self.closing = true;
-                            self.send(Command::Stop);
-                        } else {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                        if window_button(ui, WindowControl::Close, p).clicked() {
+                            if self.active() {
+                                self.closing = true;
+                                self.send(Command::Stop);
+                            } else {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
                         }
-                    }
+                        let control = if maximized {
+                            WindowControl::Restore
+                        } else {
+                            WindowControl::Maximize
+                        };
+                        if window_button(ui, control, p).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        if window_button(ui, WindowControl::Minimize, p).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        let drag = ui.allocate_response(
+                            Vec2::new(ui.available_width(), 44.0),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if drag.double_clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        } else if drag.drag_started_by(egui::PointerButton::Primary) {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                    });
                 });
             });
     }
@@ -898,4 +898,71 @@ fn resize_edges(ctx: &egui::Context) {
             ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum WindowControl {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+}
+
+fn window_button(ui: &mut egui::Ui, control: WindowControl, palette: Palette) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(46.0, 44.0), egui::Sense::click());
+    let close = matches!(control, WindowControl::Close);
+    if response.hovered() || response.is_pointer_button_down_on() {
+        ui.painter().rect_filled(
+            rect,
+            0.0,
+            if close {
+                Color32::from_rgb(196, 43, 58)
+            } else {
+                palette.surface
+            },
+        );
+    }
+    let stroke = egui::Stroke::new(
+        1.25_f32,
+        if close && response.hovered() {
+            Color32::WHITE
+        } else {
+            palette.text
+        },
+    );
+    let icon = egui::Rect::from_center_size(rect.center(), Vec2::splat(10.0));
+    match control {
+        WindowControl::Minimize => {
+            ui.painter().hline(icon.x_range(), icon.center().y, stroke);
+        }
+        WindowControl::Maximize => {
+            ui.painter().rect_stroke(icon, 0.0, stroke);
+        }
+        WindowControl::Restore => {
+            let back = icon.translate(Vec2::new(2.0, -2.0));
+            ui.painter().rect_stroke(back, 0.0, stroke);
+            ui.painter().rect_filled(
+                icon,
+                0.0,
+                if response.hovered() {
+                    palette.surface
+                } else {
+                    palette.background
+                },
+            );
+            ui.painter().rect_stroke(icon, 0.0, stroke);
+        }
+        WindowControl::Close => {
+            ui.painter()
+                .line_segment([icon.left_top(), icon.right_bottom()], stroke);
+            ui.painter()
+                .line_segment([icon.right_top(), icon.left_bottom()], stroke);
+        }
+    }
+    response.on_hover_text(match control {
+        WindowControl::Minimize => "Minimize",
+        WindowControl::Maximize => "Maximize",
+        WindowControl::Restore => "Restore",
+        WindowControl::Close => "Close",
+    })
 }
