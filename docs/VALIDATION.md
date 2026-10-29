@@ -21,3 +21,9 @@ An earlier recording exposed compressed initial frame timing; the capture loop n
 No controlled game FPS/CPU/GPU benchmark, long-duration memory test, independent color-chart comparison or manual player UI inspection has been completed. HDR, non-16:9 layouts, cursor composition and other GPU vendors are not validated. Audio, replay history, UI/tray and automatic device-loss recovery remain future work. Compilation and a short local encode do not establish support for every old PC.
 
 Private test recordings and scratch verification scripts are under ignored `work/`; they are not committed.
+
+## Focused review follow-up
+
+The encoded sample collection counted current payload bytes but retained original encoder buffers. In the caller-allocated output path each buffer was at least 1 MiB, so small packets could retain much more memory than the 32 MiB payload budget suggested. Retention now copies the compressed bytes into an exact-sized buffer and releases the original sample, also avoiding retention of a hardware encoder's output pool. Sample attributes, flags, timestamps and durations are preserved.
+
+Validation: five tests passed, including a synthetic Media Foundation regression retaining a 16-byte payload from a 1 MiB source allocation and checking capacity, timestamps and keyframe metadata. Formatting and Clippy with warnings denied passed. No screen recording was started for this review. The existing release executable predates this fix; the corrected capture path has not been exercised against a live encoder. The extra compressed-payload copy needs performance measurement in a future recording run.

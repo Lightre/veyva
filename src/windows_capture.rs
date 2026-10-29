@@ -783,8 +783,22 @@ impl Packets {
                     .SetSampleDuration(HNS_PER_SECOND / i64::from(fps))
                     .map_err(hr)?;
             }
+            // Encoder-owned samples can retain oversized buffers or a finite output
+            // pool. Keep only a compact payload copy, releasing that ownership now.
+            let buffer = MFCreateMemoryBuffer(size as u32).map_err(hr)?;
+            sample.CopyToBuffer(&buffer).map_err(hr)?;
+            let retained = MFCreateSample().map_err(hr)?;
+            sample.CopyAllItems(&retained).map_err(hr)?;
+            retained.SetSampleTime(pts).map_err(hr)?;
+            retained
+                .SetSampleDuration(sample.GetSampleDuration().map_err(hr)?)
+                .map_err(hr)?;
+            retained
+                .SetSampleFlags(sample.GetSampleFlags().map_err(hr)?)
+                .map_err(hr)?;
+            retained.AddBuffer(&buffer).map_err(hr)?;
             self.bytes += size;
-            self.samples.push(sample);
+            self.samples.push(retained);
             Ok(())
         }
     }
@@ -1079,4 +1093,37 @@ pub fn run(
         save_start.elapsed().as_millis()
     ))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn retained_payload_releases_oversized_encoder_buffer() {
+        let _session = MfSession::new().unwrap();
+        unsafe {
+            let source = MFCreateSample().unwrap();
+            let buffer = MFCreateMemoryBuffer(1024 * 1024).unwrap();
+            buffer.SetCurrentLength(16).unwrap();
+            source.AddBuffer(&buffer).unwrap();
+            source.SetSampleTime(123).unwrap();
+            source.SetSampleDuration(333333).unwrap();
+            source.SetUINT32(&MFSampleExtension_CleanPoint, 1).unwrap();
+            let mut packets = Packets {
+                samples: Vec::new(),
+                bytes: 0,
+                limit: 16,
+            };
+            packets.push(source, 30).unwrap();
+            let stored = &packets.samples[0];
+            assert_eq!(
+                stored.GetBufferByIndex(0).unwrap().GetMaxLength().unwrap(),
+                16
+            );
+            assert_eq!(stored.GetSampleTime().unwrap(), 123);
+            assert_eq!(stored.GetSampleDuration().unwrap(), 333333);
+            assert_eq!(stored.GetUINT32(&MFSampleExtension_CleanPoint).unwrap(), 1);
+            assert_eq!(packets.bytes, 16);
+        }
+    }
 }
