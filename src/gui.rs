@@ -303,7 +303,6 @@ impl App {
                 Err(error) => self.error = Some(error.to_string()),
             }
         }
-        ui.label(RichText::new("Device changes save automatically after editing and restart replay. Headphones help prevent microphone echo.").small().color(ui.visuals().weak_text_color()));
         if let Some(error) = &self.audio_load_error {
             banner(ui, error, CORAL);
         }
@@ -945,7 +944,9 @@ impl App {
             self.pending_apply.is_none() && !self.closing && self.load_error.is_none(),
             |ui| self.quick_capture_settings(ui),
         );
-        self.apply_controls(ui);
+        if self.auto_failed {
+            self.apply_controls(ui);
+        }
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
