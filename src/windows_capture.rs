@@ -223,7 +223,7 @@ impl GraphicsStack {
         let duplication = output1.DuplicateOutput(&device).map_err(|e| {
                 if e.code() == DXGI_ERROR_UNSUPPORTED {
                     RecorderError::Other(
-                        "Desktop Duplication is unavailable on this output (hybrid-GPU: run ClipFlow on the GPU driving the display)".into(),
+                        "Desktop Duplication is unavailable on this output (hybrid-GPU: run Veyva on the GPU driving the display)".into(),
                     )
                 } else {
                     hr(e)

@@ -1,8 +1,8 @@
-# Veyra Replay
+# Veyva
 
-**Keep the moment. Keep your frames.**
+**Keep the moment.**
 
-A Windows replay recorder being developed for modest PCs, bounded memory and hardware encoding. Veyra is a provisional working name, not a cleared public brand.
+A Windows replay recorder being developed for modest PCs, bounded memory and hardware encoding. Veyva is the selected project brand; no trademark, domain, or exclusivity clearance is claimed.
 
 ## Current milestone
 
@@ -25,9 +25,9 @@ cargo test --offline
 cargo build --release --offline
 ```
 
-`windows` 0.58.0 is the sole direct runtime dependency, pinned to the reference binding version. Offline builds require its transitive packages to be cached. The Windows SDK resource compiler embeds `assets/veyra.ico`; set `VEYRA_RC` to an explicit `rc.exe` path if SDK discovery fails.
+`windows` 0.58.0 is the sole direct runtime dependency, pinned to the reference binding version. Offline builds require its transitive packages to be cached. The Windows SDK resource compiler embeds `assets/veyva.ico`; set `VEYVA_RC` to an explicit `rc.exe` path if SDK discovery fails.
 
-Logs: `%LOCALAPPDATA%\Veyra\veyra.log`, rotated at startup after 1 MiB to `veyra.previous.log`. Logs include the adapter, encoder, submitted/encoded/skipped frame counts, encoded payload size and MP4 export time. Timestamp prefixes use Unix milliseconds. No footage is uploaded.
+Logs: `%LOCALAPPDATA%\Veyva\veyva.log`, rotated at startup after 1 MiB to `veyva.previous.log`. Logs include the adapter, encoder, submitted/encoded/skipped frame counts, encoded payload size and MP4 export time. Timestamp prefixes use Unix milliseconds. No footage is uploaded.
 
 ## Resource limits and boundaries
 
@@ -48,4 +48,4 @@ Logs: `%LOCALAPPDATA%\Veyra\veyra.log`, rotated at startup after 1 MiB to `veyra
 - `docs/PLAN.md`: remaining implementation and performance validation.
 - `docs/REFERENCE.md`: source review/provenance; `docs/VALIDATION.md`: observed checks.
 
-Selected GPU setup/conversion and encoder negotiation were adapted from the supplied ClipFlow revision. Required MIT notices are retained in source and `docs/CLIPFLOW-LICENSE.txt`. Its application UI, branding and updater configuration were not copied. Original Veyra code has no distribution license selected yet.
+Selected GPU setup/conversion and encoder negotiation were adapted from the supplied ClipFlow revision. Required MIT notices are retained in source and `docs/CLIPFLOW-LICENSE.txt`. Its application UI, branding and updater configuration were not copied. Original Veyva code has no distribution license selected yet.

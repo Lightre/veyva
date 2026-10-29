@@ -1,12 +1,12 @@
-/* Veyra Replay visual tokens */
+/* Veyva visual tokens */
 :root {
   color-scheme: dark;
-  --veyra-ink: #10151C;
-  --veyra-slate: #1A2330;
-  --veyra-mint: #70E2BC;
-  --veyra-mist: #EEF4F7;
-  --veyra-secondary: #A9B7C6;
-  --veyra-amber: #FFC46B;
-  --veyra-coral: #FF7D87;
-  --veyra-font-family: "Segoe UI", system-ui, sans-serif;
+  --veyva-ink: #10151C;
+  --veyva-slate: #1A2330;
+  --veyva-mint: #70E2BC;
+  --veyva-mist: #EEF4F7;
+  --veyva-secondary: #A9B7C6;
+  --veyva-amber: #FFC46B;
+  --veyva-coral: #FF7D87;
+  --veyva-font-family: "Segoe UI", system-ui, sans-serif;
 }

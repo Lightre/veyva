@@ -35,3 +35,7 @@ Validation: five tests passed, including a synthetic Media Foundation regression
 Frame pacing now uses a high-resolution Windows waitable timer, with handle cleanup and standard-sleep fallback when unavailable. Runtime timer failure disables further timer attempts and is reported after the capture loop. A synthetic creation/1 ms wait test passed on this machine, along with formatting, Clippy and the release build; no screen recording was started. Reduced live frame drops have not yet been verified.
 
 The provisional icon was replaced with a simple two-tone V. SVG geometry is the source used to generate both PNG and ICO, avoiding separate arc/stroke implementations. The final brand name and icon remain undecided.
+
+## Branding update
+
+The project brand is now Veyva. Historical validation entries above retain the names and paths observed during those earlier runs; those references describe the prior executable and log locations and were not changed by this rename. The new runtime log location is `%LOCALAPPDATA%\Veyva\veyva.log`.

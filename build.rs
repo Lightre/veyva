@@ -1,13 +1,13 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets/veyra.ico");
+    println!("cargo:rerun-if-changed=assets/veyva.ico");
     println!("cargo:rerun-if-env-changed=WindowsSdkDir");
-    println!("cargo:rerun-if-env-changed=VEYRA_RC");
+    println!("cargo:rerun-if-env-changed=VEYVA_RC");
     if !env::var("TARGET").unwrap().contains("windows-msvc") {
         return;
     }
-    let rc = env::var_os("VEYRA_RC")
+    let rc = env::var_os("VEYVA_RC")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             let root = env::var_os("WindowsSdkDir")
@@ -33,12 +33,12 @@ fn main() {
                     let p = bin.join("x64/rc.exe");
                     p.is_file().then_some(p)
                 })
-                .expect("Windows SDK rc.exe not found; set VEYRA_RC to its full path")
+                .expect("Windows SDK rc.exe not found; set VEYVA_RC to its full path")
         });
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let icon = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("assets/veyra.ico");
-    let resource = out.join("veyra.rc");
-    let binary = out.join("veyra.res");
+    let icon = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("assets/veyva.ico");
+    let resource = out.join("veyva.rc");
+    let binary = out.join("veyva.res");
     fs::write(
         &resource,
         format!(

@@ -69,7 +69,7 @@ fn main() -> std::process::ExitCode {
 fn execute() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let Some(options) = parse(&args)? else {
-        println!("Veyra Replay - native Windows capture milestone\n\nUsage:\n  veyra probe [--monitor 0]\n  veyra record --output <file.mp4> [--seconds 10] [--monitor 0]\n\nSilent 720p/30 FPS H.264. Hardware encoder required. Recording never starts automatically.");
+        println!("Veyva - native Windows capture milestone\n\nUsage:\n  veyva probe [--monitor 0]\n  veyva record --output <file.mp4> [--seconds 10] [--monitor 0]\n\nSilent 720p/30 FPS H.264. Hardware encoder required. Recording never starts automatically.");
         let profile = settings::CaptureProfile::low_end();
         println!(
             "Future replay profile: {} seconds; nominal A/V payload {:.1} MiB",
@@ -92,7 +92,7 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
     }
     let (mut log, path) = diagnostics::Logger::open()?;
     log.write(&format!(
-        "Veyra {}; log: {}",
+        "Veyva {}; log: {}",
         env!("CARGO_PKG_VERSION"),
         path.display()
     ))?;
