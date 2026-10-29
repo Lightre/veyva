@@ -29,3 +29,9 @@ Private test recordings and scratch verification scripts are under ignored `work
 The encoded sample collection counted current payload bytes but retained original encoder buffers. In the caller-allocated output path each buffer was at least 1 MiB, so small packets could retain much more memory than the 32 MiB payload budget suggested. Retention now copies the compressed bytes into an exact-sized buffer and releases the original sample, also avoiding retention of a hardware encoder's output pool. Sample attributes, flags, timestamps and durations are preserved.
 
 Validation: five tests passed, including a synthetic Media Foundation regression retaining a 16-byte payload from a 1 MiB source allocation and checking capacity, timestamps and keyframe metadata. Formatting and Clippy with warnings denied passed. No screen recording was started for this review. The existing release executable predates this fix; the corrected capture path has not been exercised against a live encoder. The extra compressed-payload copy needs performance measurement in a future recording run.
+
+## Frame pacing update
+
+Frame pacing now uses a high-resolution Windows waitable timer, with handle cleanup and standard-sleep fallback when unavailable. Runtime timer failure disables further timer attempts and is reported after the capture loop. A synthetic creation/1 ms wait test passed on this machine, along with formatting, Clippy and the release build; no screen recording was started. Reduced live frame drops have not yet been verified.
+
+The provisional icon was replaced with a simple two-tone V. SVG geometry is the source used to generate both PNG and ICO, avoiding separate arc/stroke implementations. The final brand name and icon remain undecided.

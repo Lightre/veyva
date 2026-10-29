@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Veyra Replay icon">
-  <rect width="256" height="256" rx="60" fill="#10151C"/>
-  <path d="M204 128A76 76 0 1 1 128 52" fill="none" stroke="#70E2BC" stroke-width="16" stroke-linecap="round"/>
-  <path d="M108 32 128 52 108 72" fill="none" stroke="#70E2BC" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M108 96 108 160 160 128z" fill="#EEF4F7"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Veyra Replay mark">
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#10151C"/>
+  <polygon points="52,68 90,68 130,158 111,200" fill="#70E2BC"/>
+  <polygon points="166,68 204,68 145,200 111,200" fill="#EEF4F7"/>
 </svg>

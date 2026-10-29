@@ -13,7 +13,7 @@ The name is short and easy to place in a tray menu. It is provisional: an existi
 - Text: mist `#EEF4F7`; secondary text `#A9B7C6`.
 - Warning: amber `#FFC46B`; failure: coral `#FF7D87`.
 - Typography: system Segoe UI; no downloaded fonts.
-- Mark: an open replay arc enclosing a play triangle. See `assets/mark.svg`; the Windows icon is `assets/veyra.ico`.
+- Mark: a two-tone geometric V with a mint left arm and mist right arm. See `assets/mark.svg`; the Windows icon is `assets/veyra.ico`.
 
 ## Interface template
 

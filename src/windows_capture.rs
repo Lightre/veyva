@@ -10,19 +10,90 @@ use std::{
 use windows::{
     core::{Interface, PCWSTR, PWSTR},
     Win32::{
-        Foundation::{HMODULE, TRUE},
+        Foundation::{CloseHandle, E_FAIL, HMODULE, TRUE, WAIT_FAILED, WAIT_OBJECT_0},
         Graphics::{
             Direct3D::{D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1},
             Direct3D11::*,
             Dxgi::{Common::*, *},
         },
         Media::MediaFoundation::*,
-        System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED},
+        System::{
+            Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED},
+            Threading::{
+                CreateWaitableTimerExW, SetWaitableTimer, WaitForSingleObject,
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS,
+            },
+        },
     },
 };
 const HNS_PER_SECOND: i64 = 10_000_000;
+
+struct FrameTimer(windows::Win32::Foundation::HANDLE);
+
+impl FrameTimer {
+    fn new() -> windows::core::Result<Self> {
+        unsafe {
+            CreateWaitableTimerExW(
+                None,
+                windows::core::PCWSTR::null(),
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                TIMER_ALL_ACCESS.0,
+            )
+            .map(Self)
+        }
+    }
+
+    fn wait(&self, duration: Duration) -> windows::core::Result<()> {
+        // Waitable timer due times are negative relative intervals in 100 ns units.
+        let ticks = duration.as_nanos().div_ceil(100).min(i64::MAX as u128) as i64;
+        let due_time = -ticks.max(1);
+        let timeout_ms = duration
+            .as_millis()
+            .saturating_add(u128::from(
+                !duration.subsec_nanos().is_multiple_of(1_000_000),
+            ))
+            .saturating_add(1000)
+            .min(u32::MAX as u128) as u32;
+        unsafe {
+            SetWaitableTimer(self.0, &due_time, 0, None, None, false)?;
+            match WaitForSingleObject(self.0, timeout_ms) {
+                WAIT_OBJECT_0 => Ok(()),
+                WAIT_FAILED => Err(windows::core::Error::from_win32()),
+                _ => Err(windows::core::Error::new(
+                    E_FAIL,
+                    "Waitable timer wait timed out or failed",
+                )),
+            }
+        }
+    }
+}
+
+impl Drop for FrameTimer {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
 fn hr(e: windows::core::Error) -> RecorderError {
     RecorderError::Other(format!("{} (0x{:08X})", e.message(), e.code().0 as u32))
+}
+
+#[cfg(test)]
+mod frame_timer_tests {
+    use super::FrameTimer;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn high_resolution_timer_waits_for_deadline() {
+        let timer = FrameTimer::new().expect("high-resolution waitable timer creation");
+        let start = Instant::now();
+        timer
+            .wait(Duration::from_millis(1))
+            .expect("waitable timer deadline");
+        assert!(start.elapsed() >= Duration::from_millis(1));
+    }
 }
 
 struct MfSession;
@@ -1050,6 +1121,17 @@ pub fn run(
     let mut interval_reports = IntervalReports::default();
     let mut have_frame = false;
     let mut frame_slot = 0u64;
+    let mut frame_timer = match FrameTimer::new() {
+        Ok(timer) => Some(timer),
+        Err(error) => {
+            log.write(&format!(
+                "High-resolution frame timer unavailable; using standard sleep: {}",
+                error.message()
+            ))?;
+            None
+        }
+    };
+    let mut timer_runtime_fallback = false;
     log.write(&format!(
         "Capture started: {} seconds, {}x{} at {} FPS, silent H.264",
         seconds, profile.width, profile.height, profile.fps
@@ -1091,7 +1173,17 @@ pub fn run(
             }
             if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
                 let call_start = Instant::now();
-                std::thread::sleep(delay);
+                let waited = frame_timer
+                    .as_ref()
+                    .is_some_and(|timer| timer.wait(delay).is_ok());
+                if !waited {
+                    if frame_timer.take().is_some() {
+                        timer_runtime_fallback = true;
+                    }
+                    if let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(remaining);
+                    }
+                }
                 interval_timings.sleep_wait.record(call_start.elapsed());
             }
             if start.elapsed() >= Duration::from_secs(u64::from(seconds)) {
@@ -1184,6 +1276,9 @@ pub fn run(
         }
         Ok(())
     })();
+    if timer_runtime_fallback {
+        let _ = log.write("High-resolution frame timer failed; using standard sleep");
+    }
     let report_elapsed = report_start.elapsed();
     if report_elapsed > Duration::ZERO {
         let encoded = packets.samples.len();
