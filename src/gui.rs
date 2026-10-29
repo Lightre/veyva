@@ -22,9 +22,9 @@ impl Palette {
         let rgb = Color32::from_rgb;
         match theme {
             Theme::Dark => Self {
-                background: rgb(16, 21, 28),
-                surface: rgb(24, 34, 45),
-                border: rgb(48, 64, 78),
+                background: rgb(20, 21, 23),
+                surface: rgb(30, 32, 35),
+                border: rgb(48, 51, 55),
                 text: rgb(238, 244, 247),
                 muted: rgb(169, 183, 198),
                 accent: rgb(112, 226, 188),
@@ -58,7 +58,10 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
     style.visuals.selection.stroke.color = p.accent;
     style.visuals.widgets.inactive.bg_fill = p.surface;
     style.visuals.widgets.inactive.weak_bg_fill = p.surface;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, p.border);
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+    style.visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
     style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, p.border);
     style.visuals.widgets.hovered.bg_fill = p.accent.gamma_multiply(0.18);
     style.visuals.widgets.hovered.weak_bg_fill = p.surface;
@@ -294,15 +297,15 @@ impl App {
     fn titlebar(&mut self, ctx: &egui::Context) {
         let p = Palette::for_theme(self.settings.theme);
         egui::TopBottomPanel::top("titlebar")
-            .exact_height(72.0)
+            .exact_height(44.0)
             .frame(
                 egui::Frame::none()
                     .fill(p.background)
                     .inner_margin(egui::Margin {
                         left: 22.0,
                         right: 0.0,
-                        top: 14.0,
-                        bottom: 14.0,
+                        top: 0.0,
+                        bottom: 0.0,
                     }),
             )
             .show(ctx, |ui| {
@@ -327,7 +330,7 @@ impl App {
                         if selected {
                             ui.painter().hline(
                                 response.rect.x_range(),
-                                ui.max_rect().bottom() + 13.0,
+                                ui.max_rect().bottom() - 1.5,
                                 egui::Stroke::new(3.0_f32, p.accent),
                             );
                         }
@@ -800,10 +803,7 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
         .fill(ui.visuals().window_fill)
         .rounding(12.0)
         .inner_margin(24.0)
-        .stroke(egui::Stroke::new(
-            1.0_f32,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
+        .stroke(egui::Stroke::NONE)
         .show(ui, |ui| {
             ui.set_min_width((ui.available_width()).max(0.0_f32));
             contents(ui);
@@ -848,7 +848,7 @@ fn action(
             .min_size(Vec2::new(width, 48.0))
             .rounding(7.0);
     }
-    ui.add_enabled(enabled, button)
+    ui.add_enabled(enabled, button.stroke(egui::Stroke::NONE))
 }
 
 fn readout(ui: &mut egui::Ui, label: &str, value: &str) {
@@ -860,7 +860,7 @@ fn readout(ui: &mut egui::Ui, label: &str, value: &str) {
     egui::Frame::none()
         .fill(ui.visuals().extreme_bg_color)
         .rounding(5.0)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .stroke(egui::Stroke::NONE)
         .inner_margin(10.0)
         .show(ui, |ui| {
             ui.set_min_width((ui.available_width() - 2.0).max(0.0));
