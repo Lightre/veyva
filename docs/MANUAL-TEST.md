@@ -60,3 +60,8 @@ The CLI measurement tool is documented in [PERFORMANCE.md](PERFORMANCE.md). Use 
 - Double-click veyva.exe in Explorer and open it through a shortcut: no extra console window should appear. Repeat login/background launch and verify tray behavior.
 - Run CLI help and settings show from an existing terminal. Verify redirected stdout/stderr and nonzero exit codes for invalid arguments, without starting capture. PowerShell may not wait automatically for a GUI-subsystem executable; use Start-Process -NoNewWindow -Wait or a redirected subprocess.
 - Verify desktop startup failures are reported in a native error dialog and the application log. Do not force a failure by modifying personal settings without a backup.
+
+
+## Captured audio level meters
+
+Play system audio and speak into the selected microphone during an active audio session. Each thin meter beneath its device selector must respond only to its own captured source, fall back to zero after silence and warn near full-scale. Test system-only, microphone-only, disabled sources, idle/no-session and device failure. Hover for captured peak dBFS. Meters represent pre-mix source peaks, not volume controls or a separate monitoring capture; changing a device follows the normal preference restart. Verify hidden mode adds no meter repaint timer.
