@@ -16,6 +16,8 @@ Date: 2026-10-29. Local Windows desktop, AMD Radeon Vega 8 Graphics, 496 MiB rep
 
 An earlier recording exposed compressed initial frame timing; the capture loop now timestamps scheduled frame slots using integer rational arithmetic. The corrected file passed the decode/seek checks above.
 
+Capture logs now report per-interval submitted and encoded frames plus dropped-frame reasons (`scheduler_late`, `no_frame`, `allocator_empty`, `encoder_busy`) with the actual interval duration, followed by cumulative reason totals. These counters improve diagnosis but have not been checked against a live capture in this change.
+
 ## Still unverified
 
 No controlled game FPS/CPU/GPU benchmark, long-duration memory test, independent color-chart comparison or manual player UI inspection has been completed. HDR, non-16:9 layouts, cursor composition and other GPU vendors are not validated. Audio, replay history, UI/tray and automatic device-loss recovery remain future work. Compilation and a short local encode do not establish support for every old PC.

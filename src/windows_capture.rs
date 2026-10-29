@@ -968,7 +968,18 @@ pub fn run(
     let mut deadline = start;
     let mut submitted = 0u64;
     let mut dropped = 0u64;
+    let mut scheduler_late = 0u64;
+    let mut no_frame = 0u64;
+    let mut allocator_empty = 0u64;
+    let mut encoder_busy = 0u64;
     let mut unchanged = 0u64;
+    let mut report_start = start;
+    let mut reported_submitted = 0u64;
+    let mut reported_encoded = 0usize;
+    let mut reported_scheduler_late = 0u64;
+    let mut reported_no_frame = 0u64;
+    let mut reported_allocator_empty = 0u64;
+    let mut reported_encoder_busy = 0u64;
     let mut have_frame = false;
     let mut frame_slot = 0u64;
     log.write(&format!(
@@ -976,6 +987,30 @@ pub fn run(
         seconds, profile.width, profile.height, profile.fps
     ))?;
     while start.elapsed() < Duration::from_secs(u64::from(seconds)) {
+        let report_elapsed = report_start.elapsed();
+        if report_elapsed >= Duration::from_secs(1) {
+            let encoded = packets.samples.len();
+            log.write(&format!(
+                "Capture interval: elapsed_ms={}, submitted={}, encoded={}, dropped={}, scheduler_late={}, no_frame={}, allocator_empty={}, encoder_busy={}",
+                report_elapsed.as_millis(),
+                submitted - reported_submitted,
+                encoded - reported_encoded,
+                scheduler_late - reported_scheduler_late + no_frame - reported_no_frame
+                    + allocator_empty - reported_allocator_empty
+                    + encoder_busy - reported_encoder_busy,
+                scheduler_late - reported_scheduler_late,
+                no_frame - reported_no_frame,
+                allocator_empty - reported_allocator_empty,
+                encoder_busy - reported_encoder_busy,
+            ))?;
+            report_start = Instant::now();
+            reported_submitted = submitted;
+            reported_encoded = encoded;
+            reported_scheduler_late = scheduler_late;
+            reported_no_frame = no_frame;
+            reported_allocator_empty = allocator_empty;
+            reported_encoder_busy = encoder_busy;
+        }
         if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
             std::thread::sleep(delay);
         }
@@ -986,6 +1021,7 @@ pub fn run(
         if now.duration_since(deadline) >= interval {
             let skipped = (now.duration_since(deadline).as_nanos() / interval.as_nanos()) as u64;
             dropped += skipped;
+            scheduler_late += skipped;
             frame_slot += skipped;
             deadline += interval * skipped as u32;
         }
@@ -1020,12 +1056,14 @@ pub fn run(
             }
             if !have_frame {
                 dropped += 1;
+                no_frame += 1;
                 continue;
             }
             let sample = match pool.AllocateSample() {
                 Ok(sample) => sample,
                 Err(e) if e.code() == MF_E_SAMPLEALLOCATOR_EMPTY => {
                     dropped += 1;
+                    allocator_empty += 1;
                     continue;
                 }
                 Err(e) => return Err(hr(e)),
@@ -1046,10 +1084,31 @@ pub fn run(
                 submitted += 1;
             } else {
                 dropped += 1;
+                encoder_busy += 1;
             }
         }
     }
     encoder.finish(&mut packets)?;
+    let report_elapsed = report_start.elapsed();
+    if report_elapsed > Duration::ZERO {
+        let encoded = packets.samples.len();
+        log.write(&format!(
+            "Capture interval: elapsed_ms={}, submitted={}, encoded={}, dropped={}, scheduler_late={}, no_frame={}, allocator_empty={}, encoder_busy={}",
+            report_elapsed.as_millis(),
+            submitted - reported_submitted,
+            encoded - reported_encoded,
+            scheduler_late - reported_scheduler_late + no_frame - reported_no_frame
+                + allocator_empty - reported_allocator_empty
+                + encoder_busy - reported_encoder_busy,
+            scheduler_late - reported_scheduler_late,
+            no_frame - reported_no_frame,
+            allocator_empty - reported_allocator_empty,
+            encoder_busy - reported_encoder_busy,
+        ))?;
+    }
+    log.write(&format!(
+        "Capture totals: scheduler_late={scheduler_late}, no_frame={no_frame}, allocator_empty={allocator_empty}, encoder_busy={encoder_busy}"
+    ))?;
     log.write(&format!("Capture finished: submitted={submitted}, encoded={}, dropped={dropped}, unchanged={unchanged}, payload_bytes={}", packets.samples.len(), packets.bytes))?;
     if packets.samples.len() < 2 {
         return Err(RecorderError::Other("Insufficient encoded frames".into()));
