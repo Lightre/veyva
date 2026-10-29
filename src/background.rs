@@ -159,6 +159,7 @@ impl State {
     fn event(&self, bit: u32) {
         self.events.fetch_or(bit, Ordering::Release);
         (self.wake)();
+        wake_desktop();
     }
 }
 pub struct Tray {
@@ -335,7 +336,7 @@ unsafe extern "system" fn window_proc(
             return LRESULT(0);
         }
         if message == WM_APP + 1 {
-            if lparam.0 as u32 == WM_LBUTTONDBLCLK {
+            if matches!(lparam.0 as u32, WM_LBUTTONUP | WM_LBUTTONDBLCLK) {
                 state.event(1);
             }
             if lparam.0 as u32 == WM_RBUTTONUP {
@@ -374,4 +375,34 @@ unsafe extern "system" fn window_proc(
         return LRESULT(0);
     }
     DefWindowProcW(window, message, wparam, lparam)
+}
+
+/// Windows may suppress invalidation-based redraw requests for a hidden HWND.
+/// Post one paint message to the owning UI thread so it can drain queued commands
+/// without showing the window or rendering continuously in the background.
+pub fn wake_desktop() {
+    unsafe extern "system" fn visit(window: HWND, _: LPARAM) -> BOOL {
+        unsafe {
+            let mut pid = 0;
+            GetWindowThreadProcessId(window, Some(&mut pid));
+            if pid != std::process::id() {
+                return BOOL(1);
+            }
+            let mut title = [0u16; 32];
+            let len = GetWindowTextW(window, &mut title);
+            if len <= 0 || String::from_utf16_lossy(&title[..len as usize]) != "Veyva" {
+                return BOOL(1);
+            }
+            let mut class = [0u16; 64];
+            let len = GetClassNameW(window, &mut class);
+            if len > 0 && String::from_utf16_lossy(&class[..len as usize]) == "VeyvaTrayHost" {
+                return BOOL(1);
+            }
+            let _ = PostMessageW(window, WM_PAINT, WPARAM(0), LPARAM(0));
+            BOOL(0)
+        }
+    }
+    unsafe {
+        let _ = EnumWindows(Some(visit), LPARAM(0));
+    }
 }

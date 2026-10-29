@@ -58,3 +58,8 @@ These are pending runtime checks; compile success is not playback or visual acce
 5. Measure hidden-mode CPU/GPU/memory on the target PC; hiding the GUI does not remove capture/encode costs. Abrupt Windows session termination/power loss has not been verified for recording finalization.
 
 Background and startup default to disabled; microphone also defaults to disabled. Audio device and microphone changes use Apply. Background toggles save immediately. No Windows service or elevated installation is involved.
+
+
+## Hidden tray command regression
+
+Hide Veyva using close-to-tray. A single left click or Show Veyva must restore it. Hide again and use Save Replay; the replay must save without revealing the window. Test the replay hotkey while hidden. Quit must restore the closing window if needed, finalize and exit. Repeat with login/background launch and a second executable launch. These checks remain manual; incremental Clippy does not verify native message delivery.

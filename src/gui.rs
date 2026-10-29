@@ -530,7 +530,10 @@ impl App {
             match crate::hotkey::Hotkey::register(
                 modifiers,
                 key,
-                std::sync::Arc::new(move || ctx.request_repaint()),
+                std::sync::Arc::new(move || {
+                    ctx.request_repaint();
+                    crate::background::wake_desktop();
+                }),
             ) {
                 Ok(hotkey) => self.hotkeys.push((kind, hotkey)),
                 Err(error) => {
@@ -1285,6 +1288,7 @@ impl eframe::App for App {
                 }
                 crate::background::TrayEvent::SaveReplay => self.save_replay(),
                 crate::background::TrayEvent::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     self.hidden = false;
                     self.closing = true;
                     self.send(Command::Stop);
