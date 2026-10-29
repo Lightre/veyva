@@ -1,0 +1,87 @@
+name: Portable release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUSTUP_TOOLCHAIN: 1.99.0
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  release:
+    name: Windows x64 portable draft
+    runs-on: windows-2025
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out tag and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag is on main
+        run: git merge-base --is-ancestor HEAD origin/main
+
+      - name: Validate version and changelog
+        run: python tools/release.py validate --tag $env:GITHUB_REF_NAME
+
+      - name: Test release helpers
+        run: python -m unittest discover -s tools/tests
+
+      - name: Install Rust
+        run: rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+
+      - name: Cache release dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-release-static-${{ env.RUSTUP_TOOLCHAIN }}-v1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-${{ hashFiles('src/**/*.rs', 'build.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-release-static-${{ env.RUSTUP_TOOLCHAIN }}-v1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-
+
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+
+      - name: Build portable executable
+        env:
+          RUSTFLAGS: '-C target-feature=+crt-static'
+        run: cargo build --release --locked --offline --target x86_64-pc-windows-msvc
+
+      - name: Package portable executable and notices
+        run: |
+          New-Item -ItemType Directory -Force target/release | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/veyva.exe target/release/veyva.exe
+          python tools/release.py package --tag $env:GITHUB_REF_NAME
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Create draft with changelog and generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $generated = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" -f "tag_name=$env:GITHUB_REF_NAME" --jq .body
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $notes = [IO.File]::ReadAllText("$pwd/dist/release-notes.md") + "`n`n## GitHub release notes`n`n" + ($generated -join "`n")
+          [IO.File]::WriteAllText("$pwd/dist/release-notes.md", $notes, [Text.UTF8Encoding]::new($false))
+          $releaseArguments = @('release', 'create', $env:GITHUB_REF_NAME, '--repo', $env:GITHUB_REPOSITORY, '--verify-tag', '--draft', '--title', "Veyva $env:GITHUB_REF_NAME", '--notes-file', 'dist/release-notes.md')
+          if ($env:GITHUB_REF_NAME.Contains('-')) { $releaseArguments += '--prerelease' }
+          $releaseArguments += @(Get-ChildItem dist/*.zip | ForEach-Object FullName)
+          $releaseArguments += 'dist/SHA256SUMS.txt'
+          gh @releaseArguments

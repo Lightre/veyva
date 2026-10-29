@@ -86,6 +86,8 @@ The interface uses eframe/egui 0.29.1; Windows bindings are pinned to 0.58.0. Th
 
 - [Manual testing](docs/MANUAL-TEST.md)
 - [Performance measurement](docs/PERFORMANCE.md)
+- [Releasing and portable packages](docs/RELEASING.md)
+- [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.txt)
 
