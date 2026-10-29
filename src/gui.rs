@@ -2,7 +2,7 @@ use crate::session::{self, Command, Session};
 use crate::settings::{CaptureProfile, Settings, Theme};
 use eframe::egui::{self, Color32, RichText, Vec2};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const CORAL: Color32 = Color32::from_rgb(225, 86, 104);
 
@@ -772,23 +772,22 @@ impl App {
         }
         std::fs::create_dir_all(&folder)
             .map_err(|e| format!("Could not create output folder: {e}"))?;
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos();
         let local = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
-        Ok(folder.join(format!(
-            "Veyva-{kind}-{:04}-{:02}-{:02}_{:02}-{:02}-{:02}-{:03}-{stamp}-{}.mp4",
-            local.wYear,
-            local.wMonth,
-            local.wDay,
-            local.wHour,
-            local.wMinute,
-            local.wSecond,
-            local.wMilliseconds,
-            std::process::id()
-        )))
+        crate::output::choose_path(
+            &folder,
+            [
+                local.wYear,
+                local.wMonth,
+                local.wDay,
+                local.wHour,
+                local.wMinute,
+                local.wSecond,
+                local.wMilliseconds,
+            ],
+            kind == "replay",
+        )
     }
+
     fn save_replay(&mut self) {
         if self.preferences_changed() {
             self.error =
