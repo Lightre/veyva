@@ -129,6 +129,12 @@ struct App {
     settings: Settings,
     applied: Settings,
     pending_apply: Option<bool>,
+    auto_candidate: Option<(
+        Settings,
+        crate::audio_preferences::AudioPreferences,
+        std::time::Instant,
+    )>,
+    auto_failed: bool,
     pending_command: Option<(u8, bool)>,
     pending_saved: Option<PathBuf>,
     pending_error: Option<String>,
@@ -211,6 +217,8 @@ impl App {
             settings,
             applied: settings,
             pending_apply: None,
+            auto_candidate: None,
+            auto_failed: false,
             pending_command: None,
             pending_saved: None,
             pending_error: None,
@@ -295,7 +303,7 @@ impl App {
                 Err(error) => self.error = Some(error.to_string()),
             }
         }
-        ui.label(RichText::new("Apply changes above to save devices and restart replay. Headphones help prevent microphone echo.").small().color(ui.visuals().weak_text_color()));
+        ui.label(RichText::new("Device changes save automatically after editing and restart replay. Headphones help prevent microphone echo.").small().color(ui.visuals().weak_text_color()));
         if let Some(error) = &self.audio_load_error {
             banner(ui, error, CORAL);
         }
@@ -430,62 +438,83 @@ impl App {
         }
     }
 
-    fn apply_controls(&mut self, ui: &mut egui::Ui) {
-        let state = self
+    fn preferences_changed(&self) -> bool {
+        self.settings != self.applied || self.audio_preferences != self.applied_audio
+    }
+
+    fn auto_apply_preferences(&mut self, ctx: &egui::Context) {
+        if !self.preferences_changed() {
+            self.auto_candidate = None;
+            self.auto_failed = false;
+            return;
+        }
+        if self.closing || self.pending_apply.is_some() || self.listening_shortcut.is_some() {
+            return;
+        }
+        let changed = self
+            .auto_candidate
+            .as_ref()
+            .is_none_or(|(settings, audio, _)| {
+                *settings != self.settings || *audio != self.audio_preferences
+            });
+        if changed {
+            self.auto_candidate = Some((
+                self.settings,
+                self.audio_preferences.clone(),
+                std::time::Instant::now(),
+            ));
+            self.auto_failed = false;
+        }
+        if self.auto_failed {
+            return;
+        }
+        let elapsed = self.auto_candidate.as_ref().unwrap().2.elapsed();
+        if elapsed < Duration::from_millis(500) {
+            ctx.request_repaint_after(Duration::from_millis(500) - elapsed);
+            return;
+        }
+        if ctx.wants_keyboard_input() || ctx.input(|i| i.pointer.any_down()) {
+            return;
+        }
+        let busy = self
             .session
             .as_ref()
             .and_then(|s| s.status.lock().ok())
-            .map(|s| s.clone())
-            .unwrap_or_default();
-        let busy = self.pending_command.is_some()
-            || state.phase == "Starting"
-            || self.pending_apply.is_some()
-            || self.closing
-            || state.recording
-            || state.finalizing
-            || state.saving
-            || state.phase.starts_with("Stopping");
+            .is_some_and(|s| {
+                s.recording
+                    || s.finalizing
+                    || s.saving
+                    || s.phase == "Starting"
+                    || s.phase.starts_with("Stopping")
+            });
+        if busy || self.pending_command.is_some() {
+            return;
+        }
+        self.apply_settings();
+        self.auto_failed = self.error.is_some();
+    }
+
+    fn apply_controls(&mut self, ui: &mut egui::Ui) {
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !busy
-                        && self.load_error.is_none()
-                        && (self.settings != self.applied
-                            || self.audio_preferences != self.applied_audio),
-                    egui::Button::new("Apply changes"),
-                )
-                .clicked()
-            {
-                self.apply_settings();
-            }
-            if ui
-                .add_enabled(
-                    !busy
-                        && (self.settings != self.applied
-                            || self.audio_preferences != self.applied_audio),
-                    egui::Button::new("Discard changes"),
-                )
-                .clicked()
-            {
-                self.settings = self.applied;
-                self.audio_preferences = self.applied_audio.clone();
-            }
-        });
+        let text = if self.pending_apply.is_some() {
+            "Updating capture. Replay history is restarting..."
+        } else if self.auto_failed {
+            "Preferences could not be saved. Correct the value or retry."
+        } else if self.preferences_changed() {
+            "Changes save automatically when editing finishes. Active recordings/exports finish first; current microphone capture is unchanged until then. Replay history resets."
+        } else {
+            "Preferences saved automatically."
+        };
         ui.label(
-            RichText::new(if self.pending_apply.is_some() {
-                "Applying preferences..."
-            } else if busy {
-                "Apply after recording and exports finish."
-            } else if self.settings != self.applied || self.audio_preferences != self.applied_audio
-            {
-                "Unsaved changes. Applying restarts active replay and clears its history."
-            } else {
-                "All preferences applied."
-            })
-            .small()
-            .color(ui.visuals().weak_text_color()),
+            RichText::new(text)
+                .small()
+                .color(ui.visuals().weak_text_color()),
         );
+        if self.auto_failed && ui.small_button("Retry saving").clicked() {
+            self.auto_candidate = None;
+            self.auto_failed = false;
+            self.error = None;
+        }
     }
 
     fn quick_capture_settings(&mut self, ui: &mut egui::Ui) {
@@ -736,6 +765,11 @@ impl App {
         )))
     }
     fn save_replay(&mut self) {
+        if self.preferences_changed() {
+            self.error =
+                Some("Wait for capture preferences to update before saving replay.".into());
+            return;
+        }
         if self.pending_apply.is_some() || self.pending_command.is_some() || self.closing {
             return;
         }
@@ -759,6 +793,11 @@ impl App {
         }
     }
     fn start_recording(&mut self) {
+        if self.preferences_changed() || self.pending_apply.is_some() {
+            self.error =
+                Some("Wait for capture preferences to finish updating before recording.".into());
+            return;
+        }
         let path = match self.output_path("recording") {
             Ok(path) => path,
             Err(error) => {
@@ -996,7 +1035,8 @@ impl App {
             .map(|s| s.clone())
             .unwrap_or_default();
         let active = self.active();
-        let stopping = state.phase.starts_with("Stopping")
+        let stopping = self.preferences_changed()
+            || state.phase.starts_with("Stopping")
             || self.pending_apply.is_some()
             || self.pending_command.is_some();
         ui.heading("Normal recording");
@@ -1203,7 +1243,7 @@ impl App {
         ui.label(RichText::new("Choose a profile that fits your machine.").color(palette.muted));
         ui.add_space(16.0);
         ui.label(
-            RichText::new("Changes stay in a shared draft until you apply them.")
+            RichText::new("Changes save automatically after editing. Replay restarts when capture settings change.")
                 .small()
                 .color(palette.muted),
         );
@@ -1442,6 +1482,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }
         if self.hidden {
+            self.auto_apply_preferences(ctx);
             return;
         }
         self.titlebar(ctx);
@@ -1504,6 +1545,7 @@ impl eframe::App for App {
                 });
             });
         });
+        self.auto_apply_preferences(ctx);
         resize_edges(ctx);
     }
 }

@@ -33,7 +33,7 @@ Use `--offline` with Cargo when dependencies are already cached. The resource co
 1. Open Veyva and select a capture profile. Replay arms on launch by default.
 2. Wait for history to accumulate, then choose **Save replay**, or press **Alt+F1**.
 3. For a normal recording, choose **Start recording**, optionally **Pause / Resume**, then **Finish & save**.
-4. Edit capture/audio preferences and choose **Apply changes**. Applying while replay is active clears its history and starts a new session. Active recording/export operations guard this transition.
+4. Edit capture/audio preferences; changes save automatically after editing. Changing capture settings while replay is active clears its history and starts a new session. Active recording/export operations guard this transition.
 
 Default shortcuts: **Ctrl+Shift+R** starts/finishes recording; **Ctrl+Shift+P** pauses/resumes; **Alt+F1** saves replay. Windows-reserved or conflicting combinations may fail registration and show an error.
 
