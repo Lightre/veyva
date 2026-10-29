@@ -16,7 +16,7 @@ Date: 2026-10-29. Local Windows desktop, AMD Radeon Vega 8 Graphics, 496 MiB rep
 
 An earlier recording exposed compressed initial frame timing; the capture loop now timestamps scheduled frame slots using integer rational arithmetic. The corrected file passed the decode/seek checks above.
 
-Capture logs now report per-interval submitted and encoded frames plus dropped-frame reasons (`scheduler_late`, `no_frame`, `allocator_empty`, `encoder_busy`) with the actual interval duration, followed by cumulative reason totals. These counters improve diagnosis but have not been checked against a live capture in this change.
+Capture interval diagnostics are buffered in memory (at most 64 reports) and written after capture and encoder drain, so interval logging does not write to the terminal or log file while capturing. Each report uses capture-relative `start_ms`/`end_ms`, frame counts and drop reasons, plus sum/max CPU-call wall times for sleep wait, encoder drain, acquire/convert/release, allocator/copy, and encoder submit. These timings measure time spent in the CPU calls; they do not measure asynchronous GPU execution. Totals are written after the interval reports. The buffering and timing changes have not been checked against a live capture.
 
 ## Still unverified
 

@@ -842,6 +842,75 @@ fn allocator(
     }
 }
 
+const MAX_INTERVAL_REPORTS: usize = 64;
+
+#[derive(Clone, Copy, Default)]
+struct CallTiming {
+    sum: Duration,
+    max: Duration,
+}
+
+impl CallTiming {
+    fn record(&mut self, elapsed: Duration) {
+        self.sum += elapsed;
+        self.max = self.max.max(elapsed);
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct IntervalTimings {
+    sleep_wait: CallTiming,
+    encoder_drain: CallTiming,
+    acquire_convert_release: CallTiming,
+    allocator_copy: CallTiming,
+    encoder_submit: CallTiming,
+}
+
+#[derive(Clone, Copy)]
+struct IntervalReport {
+    start_ms: u128,
+    end_ms: u128,
+    submitted: u64,
+    encoded: usize,
+    dropped: u64,
+    scheduler_late: u64,
+    no_frame: u64,
+    allocator_empty: u64,
+    encoder_busy: u64,
+    timings: IntervalTimings,
+}
+
+#[derive(Default)]
+struct IntervalReports {
+    reports: Vec<IntervalReport>,
+}
+
+impl IntervalReports {
+    fn push(&mut self, report: IntervalReport) {
+        if self.reports.len() < MAX_INTERVAL_REPORTS {
+            self.reports.push(report);
+        }
+    }
+
+    fn flush(&self, log: &mut Logger) -> RResult<()> {
+        for report in &self.reports {
+            let t = report.timings;
+            log.write(&format!(
+                "Capture interval: start_ms={}, end_ms={}, submitted={}, encoded={}, dropped={}, scheduler_late={}, no_frame={}, allocator_empty={}, encoder_busy={}, call_wall_ms_sum/max(sleep_wait)={}/{}, call_wall_ms_sum/max(encoder_drain)={}/{}, call_wall_ms_sum/max(acquire_convert_release)={}/{}, call_wall_ms_sum/max(allocator_copy)={}/{}, call_wall_ms_sum/max(encoder_submit)={}/{}; CPU call wall time, GPU execution may continue asynchronously",
+                report.start_ms, report.end_ms, report.submitted, report.encoded,
+                report.dropped, report.scheduler_late, report.no_frame,
+                report.allocator_empty, report.encoder_busy,
+                t.sleep_wait.sum.as_micros() as f64 / 1000.0, t.sleep_wait.max.as_micros() as f64 / 1000.0,
+                t.encoder_drain.sum.as_micros() as f64 / 1000.0, t.encoder_drain.max.as_micros() as f64 / 1000.0,
+                t.acquire_convert_release.sum.as_micros() as f64 / 1000.0, t.acquire_convert_release.max.as_micros() as f64 / 1000.0,
+                t.allocator_copy.sum.as_micros() as f64 / 1000.0, t.allocator_copy.max.as_micros() as f64 / 1000.0,
+                t.encoder_submit.sum.as_micros() as f64 / 1000.0, t.encoder_submit.max.as_micros() as f64 / 1000.0,
+            ))?;
+        }
+        Ok(())
+    }
+}
+
 fn mux(path: &Path, header: &VideoFormatHeader, packets: &Packets) -> RResult<()> {
     unsafe {
         let first = packets
@@ -964,8 +1033,6 @@ pub fn run(
         limit: u64::from(profile.replay_budget_mib) * 1024 * 1024,
     };
     let interval = Duration::from_secs_f64(1.0 / f64::from(profile.fps));
-    let start = Instant::now();
-    let mut deadline = start;
     let mut submitted = 0u64;
     let mut dropped = 0u64;
     let mut scheduler_late = 0u64;
@@ -973,139 +1040,179 @@ pub fn run(
     let mut allocator_empty = 0u64;
     let mut encoder_busy = 0u64;
     let mut unchanged = 0u64;
-    let mut report_start = start;
     let mut reported_submitted = 0u64;
     let mut reported_encoded = 0usize;
     let mut reported_scheduler_late = 0u64;
     let mut reported_no_frame = 0u64;
     let mut reported_allocator_empty = 0u64;
     let mut reported_encoder_busy = 0u64;
+    let mut interval_timings = IntervalTimings::default();
+    let mut interval_reports = IntervalReports::default();
     let mut have_frame = false;
     let mut frame_slot = 0u64;
     log.write(&format!(
         "Capture started: {} seconds, {}x{} at {} FPS, silent H.264",
         seconds, profile.width, profile.height, profile.fps
     ))?;
-    while start.elapsed() < Duration::from_secs(u64::from(seconds)) {
-        let report_elapsed = report_start.elapsed();
-        if report_elapsed >= Duration::from_secs(1) {
-            let encoded = packets.samples.len();
-            log.write(&format!(
-                "Capture interval: elapsed_ms={}, submitted={}, encoded={}, dropped={}, scheduler_late={}, no_frame={}, allocator_empty={}, encoder_busy={}",
-                report_elapsed.as_millis(),
-                submitted - reported_submitted,
-                encoded - reported_encoded,
-                scheduler_late - reported_scheduler_late + no_frame - reported_no_frame
-                    + allocator_empty - reported_allocator_empty
-                    + encoder_busy - reported_encoder_busy,
-                scheduler_late - reported_scheduler_late,
-                no_frame - reported_no_frame,
-                allocator_empty - reported_allocator_empty,
-                encoder_busy - reported_encoder_busy,
-            ))?;
-            report_start = Instant::now();
-            reported_submitted = submitted;
-            reported_encoded = encoded;
-            reported_scheduler_late = scheduler_late;
-            reported_no_frame = no_frame;
-            reported_allocator_empty = allocator_empty;
-            reported_encoder_busy = encoder_busy;
-        }
-        if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
-            std::thread::sleep(delay);
-        }
-        if start.elapsed() >= Duration::from_secs(u64::from(seconds)) {
-            break;
-        }
-        let now = Instant::now();
-        if now.duration_since(deadline) >= interval {
-            let skipped = (now.duration_since(deadline).as_nanos() / interval.as_nanos()) as u64;
-            dropped += skipped;
-            scheduler_late += skipped;
-            frame_slot += skipped;
-            deadline += interval * skipped as u32;
-        }
-        deadline += interval;
-        let slot = frame_slot;
-        frame_slot += 1;
-        encoder.drain(&mut packets)?;
-        unsafe {
-            let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
-            let mut resource = None;
-            match gfx
-                .duplication
-                .AcquireNextFrame(0, &mut frame_info, &mut resource)
-            {
-                Ok(()) => {
-                    // Convert before releasing the borrowed desktop surface. Only our NV12 output is retained.
-                    let converted = (|| {
-                        let resource = resource
-                            .ok_or_else(|| RecorderError::Other("Empty desktop frame".into()))?;
-                        let texture: ID3D11Texture2D = resource.cast().map_err(hr)?;
-                        converter.convert(&texture)
-                    })();
-                    let released = gfx.duplication.ReleaseFrame().map_err(hr);
-                    converted?;
-                    released?;
-                    have_frame = true;
-                }
-                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                    unchanged += 1;
-                }
-                Err(e) => return Err(hr(e)),
+    let start = Instant::now();
+    let mut deadline = start;
+    let mut report_start = start;
+    let capture_result = (|| -> RResult<()> {
+        while start.elapsed() < Duration::from_secs(u64::from(seconds)) {
+            let report_elapsed = report_start.elapsed();
+            if report_elapsed >= Duration::from_secs(1) {
+                let encoded = packets.samples.len();
+                let end_ms = start.elapsed().as_millis();
+                interval_reports.push(IntervalReport {
+                    start_ms: end_ms.saturating_sub(report_elapsed.as_millis()),
+                    end_ms,
+                    submitted: submitted - reported_submitted,
+                    encoded: encoded - reported_encoded,
+                    dropped: scheduler_late - reported_scheduler_late + no_frame
+                        - reported_no_frame
+                        + allocator_empty
+                        - reported_allocator_empty
+                        + encoder_busy
+                        - reported_encoder_busy,
+                    scheduler_late: scheduler_late - reported_scheduler_late,
+                    no_frame: no_frame - reported_no_frame,
+                    allocator_empty: allocator_empty - reported_allocator_empty,
+                    encoder_busy: encoder_busy - reported_encoder_busy,
+                    timings: interval_timings,
+                });
+                report_start = Instant::now();
+                interval_timings = IntervalTimings::default();
+                reported_submitted = submitted;
+                reported_encoded = encoded;
+                reported_scheduler_late = scheduler_late;
+                reported_no_frame = no_frame;
+                reported_allocator_empty = allocator_empty;
+                reported_encoder_busy = encoder_busy;
             }
-            if !have_frame {
-                dropped += 1;
-                no_frame += 1;
-                continue;
+            if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+                let call_start = Instant::now();
+                std::thread::sleep(delay);
+                interval_timings.sleep_wait.record(call_start.elapsed());
             }
-            let sample = match pool.AllocateSample() {
-                Ok(sample) => sample,
-                Err(e) if e.code() == MF_E_SAMPLEALLOCATOR_EMPTY => {
+            if start.elapsed() >= Duration::from_secs(u64::from(seconds)) {
+                break;
+            }
+            let now = Instant::now();
+            if now.duration_since(deadline) >= interval {
+                let skipped =
+                    (now.duration_since(deadline).as_nanos() / interval.as_nanos()) as u64;
+                dropped += skipped;
+                scheduler_late += skipped;
+                frame_slot += skipped;
+                deadline += interval * skipped as u32;
+            }
+            deadline += interval;
+            let slot = frame_slot;
+            frame_slot += 1;
+            let call_start = Instant::now();
+            encoder.drain(&mut packets)?;
+            interval_timings.encoder_drain.record(call_start.elapsed());
+            unsafe {
+                let call_start = Instant::now();
+                let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+                let mut resource = None;
+                match gfx
+                    .duplication
+                    .AcquireNextFrame(0, &mut frame_info, &mut resource)
+                {
+                    Ok(()) => {
+                        // Convert before releasing the borrowed desktop surface. Only our NV12 output is retained.
+                        let converted = (|| {
+                            let resource = resource.ok_or_else(|| {
+                                RecorderError::Other("Empty desktop frame".into())
+                            })?;
+                            let texture: ID3D11Texture2D = resource.cast().map_err(hr)?;
+                            converter.convert(&texture)
+                        })();
+                        let released = gfx.duplication.ReleaseFrame().map_err(hr);
+                        converted?;
+                        released?;
+                        have_frame = true;
+                    }
+                    Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                        unchanged += 1;
+                    }
+                    Err(e) => return Err(hr(e)),
+                }
+                interval_timings
+                    .acquire_convert_release
+                    .record(call_start.elapsed());
+                if !have_frame {
                     dropped += 1;
-                    allocator_empty += 1;
+                    no_frame += 1;
                     continue;
                 }
-                Err(e) => return Err(hr(e)),
-            };
-            let buffer = sample.GetBufferByIndex(0).map_err(hr)?;
-            let dxgi: IMFDXGIBuffer = buffer.cast().map_err(hr)?;
-            let mut raw = std::ptr::null_mut();
-            dxgi.GetResource(&ID3D11Texture2D::IID, &mut raw)
-                .map_err(hr)?;
-            let target = ID3D11Texture2D::from_raw(raw);
-            gfx.context.CopyResource(&target, &converter.nv12);
-            let pts = super::frame_time(slot, profile.fps);
-            sample.SetSampleTime(pts).map_err(hr)?;
-            sample
-                .SetSampleDuration(super::frame_time(slot + 1, profile.fps) - pts)
-                .map_err(hr)?;
-            if encoder.submit(&sample)? {
-                submitted += 1;
-            } else {
-                dropped += 1;
-                encoder_busy += 1;
+                let call_start = Instant::now();
+                let sample = match pool.AllocateSample() {
+                    Ok(sample) => sample,
+                    Err(e) if e.code() == MF_E_SAMPLEALLOCATOR_EMPTY => {
+                        interval_timings.allocator_copy.record(call_start.elapsed());
+                        dropped += 1;
+                        allocator_empty += 1;
+                        continue;
+                    }
+                    Err(e) => return Err(hr(e)),
+                };
+                let buffer = sample.GetBufferByIndex(0).map_err(hr)?;
+                let dxgi: IMFDXGIBuffer = buffer.cast().map_err(hr)?;
+                let mut raw = std::ptr::null_mut();
+                dxgi.GetResource(&ID3D11Texture2D::IID, &mut raw)
+                    .map_err(hr)?;
+                let target = ID3D11Texture2D::from_raw(raw);
+                gfx.context.CopyResource(&target, &converter.nv12);
+                interval_timings.allocator_copy.record(call_start.elapsed());
+                let pts = super::frame_time(slot, profile.fps);
+                sample.SetSampleTime(pts).map_err(hr)?;
+                sample
+                    .SetSampleDuration(super::frame_time(slot + 1, profile.fps) - pts)
+                    .map_err(hr)?;
+                let call_start = Instant::now();
+                let accepted = encoder.submit(&sample)?;
+                interval_timings.encoder_submit.record(call_start.elapsed());
+                if accepted {
+                    submitted += 1;
+                } else {
+                    dropped += 1;
+                    encoder_busy += 1;
+                }
             }
         }
-    }
-    encoder.finish(&mut packets)?;
+        Ok(())
+    })();
     let report_elapsed = report_start.elapsed();
     if report_elapsed > Duration::ZERO {
         let encoded = packets.samples.len();
-        log.write(&format!(
-            "Capture interval: elapsed_ms={}, submitted={}, encoded={}, dropped={}, scheduler_late={}, no_frame={}, allocator_empty={}, encoder_busy={}",
-            report_elapsed.as_millis(),
-            submitted - reported_submitted,
-            encoded - reported_encoded,
-            scheduler_late - reported_scheduler_late + no_frame - reported_no_frame
-                + allocator_empty - reported_allocator_empty
-                + encoder_busy - reported_encoder_busy,
-            scheduler_late - reported_scheduler_late,
-            no_frame - reported_no_frame,
-            allocator_empty - reported_allocator_empty,
-            encoder_busy - reported_encoder_busy,
-        ))?;
+        let end_ms = start.elapsed().as_millis();
+        interval_reports.push(IntervalReport {
+            start_ms: end_ms.saturating_sub(report_elapsed.as_millis()),
+            end_ms,
+            submitted: submitted - reported_submitted,
+            encoded: encoded - reported_encoded,
+            dropped: scheduler_late - reported_scheduler_late + no_frame - reported_no_frame
+                + allocator_empty
+                - reported_allocator_empty
+                + encoder_busy
+                - reported_encoder_busy,
+            scheduler_late: scheduler_late - reported_scheduler_late,
+            no_frame: no_frame - reported_no_frame,
+            allocator_empty: allocator_empty - reported_allocator_empty,
+            encoder_busy: encoder_busy - reported_encoder_busy,
+            timings: interval_timings,
+        });
     }
+    if let Err(error) = capture_result {
+        let _ = interval_reports.flush(log);
+        return Err(error);
+    }
+    let finish_result = encoder.finish(&mut packets);
+    let flush_result = interval_reports.flush(log);
+    finish_result?;
+    flush_result?;
     log.write(&format!(
         "Capture totals: scheduler_late={scheduler_late}, no_frame={no_frame}, allocator_empty={allocator_empty}, encoder_busy={encoder_busy}"
     ))?;
@@ -1157,6 +1264,30 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interval_reports_are_bounded() {
+        let mut reports = IntervalReports::default();
+        for end_ms in 0..(MAX_INTERVAL_REPORTS + 1) as u128 {
+            reports.push(IntervalReport {
+                start_ms: end_ms,
+                end_ms,
+                submitted: 0,
+                encoded: 0,
+                dropped: 0,
+                scheduler_late: 0,
+                no_frame: 0,
+                allocator_empty: 0,
+                encoder_busy: 0,
+                timings: IntervalTimings::default(),
+            });
+        }
+        assert_eq!(reports.reports.len(), MAX_INTERVAL_REPORTS);
+        assert_eq!(
+            reports.reports.last().unwrap().end_ms,
+            (MAX_INTERVAL_REPORTS - 1) as u128
+        );
+    }
+
     #[test]
     fn retained_payload_releases_oversized_encoder_buffer() {
         let _session = MfSession::new().unwrap();
