@@ -31,9 +31,20 @@ impl PacketClock {
         qpc_frame
     }
 }
+/// Synthesize idle-render silence only after a real quiet interval, never
+/// while captured packets are still waiting to be consumed.
+pub fn should_fill_silence(backlogged: bool, since_packet_ms: u128) -> bool {
+    !backlogged && since_packet_ms >= 150
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_real_packets_are_never_replaced_with_silence() {
+        assert!(!should_fill_silence(true, 500));
+        assert!(!should_fill_silence(false, 149));
+        assert!(should_fill_silence(false, 150));
+    }
     #[test]
     fn timestamp_rounding_does_not_insert_or_remove_samples() {
         let mut clock = PacketClock::default();

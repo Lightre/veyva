@@ -75,3 +75,13 @@ A user reported continuous crackle in a desktop A/V recording. The supplied 22.3
 The packet assembler previously recomputed an integer PCM-frame target from every WASAPI QPC timestamp. Even one-frame timestamp rounding/jitter could insert a zero frame or remove a PCM frame at each packet boundary. Packet alignment now anchors QPC once and follows the device sample position; large wall-clock discontinuities or device-position resets re-anchor, while ordinary packet timestamp jitter does not edit PCM. Real missing device frames still create a gap. Audio startup now logs the requested PCM16/48 kHz/stereo format and the native mix-format fields once.
 
 Four isolated alignment tests passed (timestamp jitter, genuine missing frames, silence/resume, reset/invalid timestamp), and integrated Clippy passed. No live audio capture or listening test was performed after this change. This addresses a concrete source of discontinuities but does not establish that it explains all of the reported crackle; manual comparison against the same source audio is required.
+
+## Remaining intermittent audio glitches
+
+The user reported that the sample-position change greatly reduced crackle but did not eliminate small intermittent artifacts in normal and replay recordings. The new startup log identifies a native 48 kHz stereo 32-bit extensible mix format; the requested capture format is explicitly converted PCM16/48 kHz/stereo.
+
+The WASAPI buffer capacity request was increased from 20 ms to 100 ms to tolerate brief scheduling delays; reads still poll every 5 ms. Idle-silence synthesis now waits for 150 ms without captured packets and is prohibited while real packets remain queued. Backlogged packets are drained in bounded batches without an extra 5 ms sleep between productive batches. This prevents a late capture worker from treating queued source sound as silence.
+
+Deferred audio diagnostics keep counters plus at most 24 numeric events in memory (startup context and recent glitches). On shutdown/error they log device-discontinuity flags, invalid timestamps, inserted/trimmed frame totals, idle-fill totals, backlog observations and maximum poll interval. No packet-loop terminal/file writes were introduced.
+
+Five isolated audio alignment/silence-policy tests and integrated Clippy passed. No new live recording, listening or release build was performed. The residual crackle remains unconfirmed until the same source is tested; the counters should distinguish genuine capture discontinuities from application alignment/silence insertion.

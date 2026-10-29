@@ -122,6 +122,44 @@ unsafe fn run(
     result.map_err(|e| format!("System audio: {e}"))
 }
 
+#[derive(Default)]
+struct AudioDiagnostics {
+    packets: u64,
+    discontinuities: u64,
+    invalid_timestamps: u64,
+    gap_frames: u64,
+    trimmed_frames: u64,
+    idle_fill_frames: u64,
+    backlog_polls: u64,
+    max_poll_ms: u128,
+    events: Vec<(u128, &'static str, u64)>,
+}
+impl AudioDiagnostics {
+    fn event(&mut self, origin: Instant, kind: &'static str, frames: u64) {
+        // Preserve startup context and the most recent glitches, with no strings
+        // or log writes in the packet loop.
+        if self.events.len() == 24 {
+            self.events.remove(8);
+        }
+        self.events
+            .push((origin.elapsed().as_millis(), kind, frames));
+    }
+}
+impl Drop for AudioDiagnostics {
+    fn drop(&mut self) {
+        // Writes happen after capture has stopped, including error unwinding.
+        if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+            let _=log.write(&format!("Audio summary: packets={}, discontinuities={}, invalid_timestamps={}, gap_frames={}, trimmed_frames={}, idle_fill_frames={}, backlog_polls={}, max_poll_ms={}",self.packets,self.discontinuities,self.invalid_timestamps,self.gap_frames,self.trimmed_frames,self.idle_fill_frames,self.backlog_polls,self.max_poll_ms));
+            for event in &self.events {
+                let _ = log.write(&format!(
+                    "Audio event: elapsed_ms={}, kind={}, frames={}",
+                    event.0, event.1, event.2
+                ));
+            }
+        }
+    }
+}
+
 unsafe fn capture(
     origin: Instant,
     stop: &AtomicBool,
@@ -147,7 +185,7 @@ unsafe fn capture(
         AUDCLNT_STREAMFLAGS_LOOPBACK
             | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
             | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        200_000,
+        1_000_000, // 100 ms capacity tolerates brief scheduling stalls; poll remains 5 ms.
         0,
         &format,
         None,
@@ -162,7 +200,7 @@ unsafe fn capture(
         );
         CoTaskMemFree(Some(mix.cast()));
         if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
-            let _=log.write(&format!("System audio format: requested PCM16 48000 Hz stereo; native mix tag={tag}, rate={rate}, channels={channels}, bits={bits}; sample-position packet alignment"));
+            let _=log.write(&format!("System audio format: requested PCM16 48000 Hz stereo; native mix tag={tag}, rate={rate}, channels={channels}, bits={bits}; sample-position packet alignment; WASAPI buffer request=100 ms"));
         }
     }
     let capture: IAudioCaptureClient = client.GetService()?;
@@ -179,7 +217,16 @@ unsafe fn capture(
     let mut pending = Vec::<u8>::with_capacity(192_000);
     let mut packet_clock = crate::audio_timeline::PacketClock::default();
     let mut frames_written = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
+    let mut diagnostics = AudioDiagnostics::default();
+    let mut last_packet = Instant::now();
+    let mut previous_poll = Instant::now();
     while !stop.load(Ordering::Acquire) {
+        let now = Instant::now();
+        diagnostics.max_poll_ms = diagnostics
+            .max_poll_ms
+            .max(now.duration_since(previous_poll).as_millis());
+        previous_poll = now;
+        let mut drained_frames = 0u64;
         // Bound both the PCM queue and work per poll, including on a broken driver.
         for _ in 0..32 {
             if stop.load(Ordering::Acquire) || capture.GetNextPacketSize()? == 0 {
@@ -203,8 +250,28 @@ unsafe fn capture(
             let qpc_frame =
                 (((qpc_position as i128 - origin_hns).max(0) * 48_000) / 10_000_000) as i64;
             let target = packet_clock.target(device_position, qpc_frame, valid_time, queued_end);
+            diagnostics.packets += 1;
+            if frames > 0 {
+                last_packet = Instant::now();
+                drained_frames += u64::from(frames);
+            }
+            if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
+                diagnostics.discontinuities += 1;
+                diagnostics.event(origin, "device_discontinuity", u64::from(frames));
+            }
+            if !valid_time {
+                diagnostics.invalid_timestamps += 1;
+            }
             let gap = (target - queued_end).max(0) as usize;
             let trim = (queued_end - target).max(0).min(i64::from(frames)) as usize;
+            diagnostics.gap_frames += gap as u64;
+            diagnostics.trimmed_frames += trim as u64;
+            if gap > 0 {
+                diagnostics.event(origin, "alignment_gap", gap as u64);
+            }
+            if trim > 0 {
+                diagnostics.event(origin, "alignment_trim", trim as u64);
+            }
             let bytes = (frames as usize - trim) * 4;
             let overflow = gap > 48_000 || pending.len() + gap * 4 + bytes > 192_000;
             if !overflow {
@@ -224,13 +291,23 @@ unsafe fn capture(
                 ));
             }
         }
-        // Loopback may deliver no packets at all while the render device is idle.
-        // Fill only after a 50 ms grace period so later sound retains wall time.
+        let backlogged = capture.GetNextPacketSize()? > 0;
+        if backlogged {
+            diagnostics.backlog_polls += 1;
+        }
+        // A temporarily late capture thread is not an idle render device.
+        // Drain real packets first; synthesize silence only after confirmed idle.
         let elapsed_frames = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
         let missing = elapsed_frames - frames_written - (pending.len() / 4) as i64 - 2400;
-        if missing > 0 {
+        if missing > 0
+            && crate::audio_timeline::should_fill_silence(
+                backlogged,
+                last_packet.elapsed().as_millis(),
+            )
+        {
             let fill = (missing as usize).min((192_000 - pending.len()) / 4);
             pending.resize(pending.len() + fill * 4, 0);
+            diagnostics.idle_fill_frames += fill as u64;
         }
         while pending.len() >= 4096 && !stop.load(Ordering::Acquire) {
             encoder.input(&pending[..4096], frames_written * 10_000_000 / 48_000)?;
@@ -238,7 +315,9 @@ unsafe fn capture(
             frames_written += 1024;
             encoder.output(sender)?;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        if !backlogged || drained_frames == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
     encoder
         .transform
