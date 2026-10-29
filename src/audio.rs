@@ -1,4 +1,4 @@
-//! Default render endpoint loopback, converted by WASAPI to 48 kHz stereo PCM.
+//! Selected render loopback and optional microphone, mixed as 48 kHz stereo PCM.
 //! AAC setup adapted from ClipFlow src-tauri/src/media/audio.rs,
 //! revision d204de138d503d2eb41fcb2af553aa2430f0a78b (MIT).
 //! Copyright (c) 2026 jaimitus. See docs/CLIPFLOW-LICENSE.txt for the MIT license.
@@ -31,7 +31,11 @@ pub(crate) struct AudioCapture {
 }
 
 impl AudioCapture {
-    pub fn start(origin: Instant) -> Result<Self, String> {
+    pub fn start(
+        origin: Instant,
+        system_enabled: bool,
+        preferences: crate::audio_preferences::AudioPreferences,
+    ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
         let (sender, packets) = mpsc::sync_channel(128);
@@ -39,15 +43,24 @@ impl AudioCapture {
         let stop_worker = stop.clone();
         let error_worker = error.clone();
         let worker = std::thread::Builder::new()
-            .name("veyva-system-audio".into())
+            .name("veyva-audio".into())
             .spawn(move || {
-                let result = unsafe { run(origin, &stop_worker, &sender, &ready_tx) };
+                let result = unsafe {
+                    run(
+                        origin,
+                        system_enabled,
+                        preferences,
+                        &stop_worker,
+                        &sender,
+                        &ready_tx,
+                    )
+                };
                 if let Err(message) = result {
                     *error_worker.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.clone());
                     let _ = ready_tx.try_send(Err(message));
                 }
             })
-            .map_err(|e| format!("Start system audio thread: {e}"))?;
+            .map_err(|e| format!("Start audio thread: {e}"))?;
         match ready_rx.recv_timeout(Duration::from_secs(3)) {
             Ok(Ok(())) => Ok(Self {
                 stop,
@@ -64,7 +77,7 @@ impl AudioCapture {
                 }
                 Err(match result {
                     Ok(Err(e)) => e,
-                    _ => "System audio initialization timed out".into(),
+                    _ => "Audio initialization timed out".into(),
                 })
             }
         }
@@ -106,6 +119,8 @@ impl Drop for Endpoint {
 
 unsafe fn run(
     origin: Instant,
+    system_enabled: bool,
+    preferences: crate::audio_preferences::AudioPreferences,
     stop: &AtomicBool,
     sender: &SyncSender<AudioPacket>,
     ready: &SyncSender<Result<(), String>>,
@@ -118,8 +133,8 @@ unsafe fn run(
         return Err(format!("Initialize audio Media Foundation: {e}"));
     }
     let _runtime = Runtime;
-    let result = capture(origin, stop, sender, ready);
-    result.map_err(|e| format!("System audio: {e}"))
+    let result = capture(origin, system_enabled, preferences, stop, sender, ready);
+    result.map_err(|e| format!("Audio capture: {e}"))
 }
 
 #[derive(Default)]
@@ -160,73 +175,90 @@ impl Drop for AudioDiagnostics {
     }
 }
 
-unsafe fn capture(
-    origin: Instant,
-    stop: &AtomicBool,
-    sender: &SyncSender<AudioPacket>,
-    ready: &SyncSender<Result<(), String>>,
-) -> windows::core::Result<()> {
-    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-    let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
-    let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-    // Explicit conversion avoids interpreting arbitrary endpoint channel layouts
-    // or treating a 44.1 kHz mix as 48 kHz. Unsupported conversion fails startup.
-    let format = WAVEFORMATEX {
-        wFormatTag: 1,
-        nChannels: 2,
-        nSamplesPerSec: 48_000,
-        nAvgBytesPerSec: 192_000,
-        nBlockAlign: 4,
-        wBitsPerSample: 16,
-        cbSize: 0,
-    };
-    client.Initialize(
-        AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_LOOPBACK
-            | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-            | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        1_000_000, // 100 ms capacity tolerates brief scheduling stalls; poll remains 5 ms.
-        0,
-        &format,
-        None,
-    )?;
-    if let Ok(mix) = client.GetMixFormat() {
-        let native = std::ptr::read_unaligned(mix);
-        let (tag, rate, channels, bits) = (
-            native.wFormatTag,
-            native.nSamplesPerSec,
-            native.nChannels,
-            native.wBitsPerSample,
-        );
-        CoTaskMemFree(Some(mix.cast()));
-        if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
-            let _=log.write(&format!("System audio format: requested PCM16 48000 Hz stereo; native mix tag={tag}, rate={rate}, channels={channels}, bits={bits}; sample-position packet alignment; WASAPI buffer request=100 ms"));
+struct Source {
+    _endpoint: Endpoint,
+    capture: IAudioCaptureClient,
+    pending: Vec<u8>,
+    packet_clock: crate::audio_timeline::PacketClock,
+    frames_written: i64,
+    diagnostics: AudioDiagnostics,
+    last_packet: Instant,
+}
+impl Source {
+    unsafe fn new(
+        id: Option<&str>,
+        is_input: bool,
+        first_frame: i64,
+    ) -> windows::core::Result<Self> {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let device = match id {
+            Some(id) => enumerator.GetDevice(windows::core::PCWSTR(
+                windows::core::HSTRING::from(id).as_ptr(),
+            ))?,
+            None => enumerator
+                .GetDefaultAudioEndpoint(if is_input { eCapture } else { eRender }, eConsole)?,
+        };
+        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        // Explicit conversion avoids interpreting arbitrary endpoint channel layouts
+        // or treating a 44.1 kHz mix as 48 kHz. Unsupported conversion fails startup.
+        let format = WAVEFORMATEX {
+            wFormatTag: 1,
+            nChannels: 2,
+            nSamplesPerSec: 48_000,
+            nAvgBytesPerSec: 192_000,
+            nBlockAlign: 4,
+            wBitsPerSample: 16,
+            cbSize: 0,
+        };
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            (if is_input {
+                0
+            } else {
+                AUDCLNT_STREAMFLAGS_LOOPBACK
+            }) | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            1_000_000, // 100 ms capacity tolerates brief scheduling stalls; poll remains 5 ms.
+            0,
+            &format,
+            None,
+        )?;
+        if let Ok(mix) = client.GetMixFormat() {
+            let native = std::ptr::read_unaligned(mix);
+            let (tag, rate, channels, bits) = (
+                native.wFormatTag,
+                native.nSamplesPerSec,
+                native.nChannels,
+                native.wBitsPerSample,
+            );
+            CoTaskMemFree(Some(mix.cast()));
+            if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+                let _=log.write(&format!("System audio format: requested PCM16 48000 Hz stereo; native mix tag={tag}, rate={rate}, channels={channels}, bits={bits}; sample-position packet alignment; WASAPI buffer request=100 ms"));
+            }
         }
+        let capture: IAudioCaptureClient = client.GetService()?;
+        client.Start()?;
+        Ok(Self {
+            _endpoint: Endpoint(client),
+            capture,
+            pending: Vec::with_capacity(192_000),
+            packet_clock: Default::default(),
+            frames_written: first_frame,
+            diagnostics: Default::default(),
+            last_packet: Instant::now(),
+        })
     }
-    let capture: IAudioCaptureClient = client.GetService()?;
-    let encoder = Encoder::new()?;
-    client.Start()?;
-    let _endpoint = Endpoint(client);
-    let mut qpc = 0i64;
-    let mut frequency = 0i64;
-    windows::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)?;
-    windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc)?;
-    let origin_hns =
-        qpc as i128 * 10_000_000 / frequency as i128 - origin.elapsed().as_nanos() as i128 / 100;
-    let _ = ready.try_send(Ok(()));
-    let mut pending = Vec::<u8>::with_capacity(192_000);
-    let mut packet_clock = crate::audio_timeline::PacketClock::default();
-    let mut frames_written = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
-    let mut diagnostics = AudioDiagnostics::default();
-    let mut last_packet = Instant::now();
-    let mut previous_poll = Instant::now();
-    while !stop.load(Ordering::Acquire) {
-        let now = Instant::now();
-        diagnostics.max_poll_ms = diagnostics
-            .max_poll_ms
-            .max(now.duration_since(previous_poll).as_millis());
-        previous_poll = now;
+    unsafe fn poll(
+        &mut self,
+        origin: Instant,
+        origin_hns: i128,
+        stop: &AtomicBool,
+    ) -> windows::core::Result<bool> {
         let mut drained_frames = 0u64;
+        let capture = &self.capture;
+        let pending = &mut self.pending;
+        let diagnostics = &mut self.diagnostics;
         // Bound both the PCM queue and work per poll, including on a broken driver.
         for _ in 0..32 {
             if stop.load(Ordering::Acquire) || capture.GetNextPacketSize()? == 0 {
@@ -246,13 +278,15 @@ unsafe fn capture(
             )?;
             // WASAPI QPC positions already use 100 ns units (not raw counter ticks).
             let valid_time = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0;
-            let queued_end = frames_written + (pending.len() / 4) as i64;
+            let queued_end = self.frames_written + (pending.len() / 4) as i64;
             let qpc_frame =
                 (((qpc_position as i128 - origin_hns).max(0) * 48_000) / 10_000_000) as i64;
-            let target = packet_clock.target(device_position, qpc_frame, valid_time, queued_end);
+            let target =
+                self.packet_clock
+                    .target(device_position, qpc_frame, valid_time, queued_end);
             diagnostics.packets += 1;
             if frames > 0 {
-                last_packet = Instant::now();
+                self.last_packet = Instant::now();
                 drained_frames += u64::from(frames);
             }
             if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {
@@ -298,24 +332,89 @@ unsafe fn capture(
         // A temporarily late capture thread is not an idle render device.
         // Drain real packets first; synthesize silence only after confirmed idle.
         let elapsed_frames = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
-        let missing = elapsed_frames - frames_written - (pending.len() / 4) as i64 - 2400;
+        let missing = elapsed_frames - self.frames_written - (pending.len() / 4) as i64 - 2400;
         if missing > 0
             && crate::audio_timeline::should_fill_silence(
                 backlogged,
-                last_packet.elapsed().as_millis(),
+                self.last_packet.elapsed().as_millis(),
             )
         {
             let fill = (missing as usize).min((192_000 - pending.len()) / 4);
             pending.resize(pending.len() + fill * 4, 0);
             diagnostics.idle_fill_frames += fill as u64;
         }
-        while pending.len() >= 4096 && !stop.load(Ordering::Acquire) {
-            encoder.input(&pending[..4096], frames_written * 10_000_000 / 48_000)?;
-            pending.drain(..4096);
+
+        Ok(backlogged && drained_frames > 0)
+    }
+}
+
+unsafe fn capture(
+    origin: Instant,
+    system_enabled: bool,
+    preferences: crate::audio_preferences::AudioPreferences,
+    stop: &AtomicBool,
+    sender: &SyncSender<AudioPacket>,
+    ready: &SyncSender<Result<(), String>>,
+) -> windows::core::Result<()> {
+    let first_frame = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
+    let mut sources = Vec::with_capacity(2);
+    if system_enabled {
+        sources.push(Source::new(
+            preferences.output_device.as_deref(),
+            false,
+            first_frame,
+        )?);
+    }
+    if preferences.microphone_enabled {
+        sources.push(Source::new(
+            preferences.input_device.as_deref(),
+            true,
+            first_frame,
+        )?);
+    }
+    let encoder = Encoder::new()?;
+    let mut qpc = 0i64;
+    let mut frequency = 0i64;
+    windows::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)?;
+    windows::Win32::System::Performance::QueryPerformanceCounter(&mut qpc)?;
+    let origin_hns =
+        qpc as i128 * 10_000_000 / frequency as i128 - origin.elapsed().as_nanos() as i128 / 100;
+    let _ = ready.try_send(Ok(()));
+    let mut frames_written = first_frame;
+    let mut previous_poll = Instant::now();
+    while !stop.load(Ordering::Acquire) {
+        let now = Instant::now();
+        let mut backlogged = false;
+        for source in &mut sources {
+            source.diagnostics.max_poll_ms = source
+                .diagnostics
+                .max_poll_ms
+                .max(now.duration_since(previous_poll).as_millis());
+            backlogged |= source.poll(origin, origin_hns, stop)?;
+        }
+        previous_poll = now;
+        // Each source owns its clock and bounded PCM history. Mix only when
+        // both cover the same frame range; idle sources synthesize silence.
+        while !sources.is_empty()
+            && sources.iter().all(|source| source.pending.len() >= 4096)
+            && !stop.load(Ordering::Acquire)
+        {
+            let mut mixed = [0u8; 4096];
+            for index in (0..4096).step_by(2) {
+                let sample = crate::audio_timeline::mix_pcm16(sources.iter().map(|source| {
+                    i16::from_le_bytes([source.pending[index], source.pending[index + 1]])
+                }));
+                mixed[index..index + 2].copy_from_slice(&sample.to_le_bytes());
+            }
+            encoder.input(&mixed, frames_written * 10_000_000 / 48_000)?;
+            for source in &mut sources {
+                source.pending.drain(..4096);
+                source.frames_written += 1024;
+            }
             frames_written += 1024;
             encoder.output(sender)?;
         }
-        if !backlogged || drained_frames == 0 {
+        if !backlogged {
             std::thread::sleep(Duration::from_millis(5));
         }
     }

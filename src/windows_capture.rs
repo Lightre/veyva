@@ -181,8 +181,16 @@ pub(super) fn continuous(
     };
 
     let origin = Instant::now();
-    let mut audio = if settings.audio_enabled {
-        match crate::audio::AudioCapture::start(origin) {
+    let audio_preferences = crate::audio_preferences::AudioPreferences::default_path()
+        .and_then(|path| crate::audio_preferences::AudioPreferences::load(&path));
+    let mut audio = if settings.audio_enabled
+        || audio_preferences
+            .as_ref()
+            .is_ok_and(|p| p.microphone_enabled)
+    {
+        match audio_preferences.and_then(|preferences| {
+            crate::audio::AudioCapture::start(origin, settings.audio_enabled, preferences)
+        }) {
             Ok(audio) => Some(audio),
             Err(error) => {
                 status.lock().unwrap_or_else(|e| e.into_inner()).audio_error = Some(error);

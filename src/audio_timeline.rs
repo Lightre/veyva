@@ -36,9 +36,33 @@ impl PacketClock {
 pub fn should_fill_silence(backlogged: bool, since_packet_ms: u128) -> bool {
     !backlogged && since_packet_ms >= 150
 }
+/// Mix samples aligned to the same PCM frame, clipping at PCM16 limits.
+pub fn mix_pcm16(samples: impl Iterator<Item = i16>) -> i16 {
+    samples
+        .map(i32::from)
+        .sum::<i32>()
+        .clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn aligned_mix_preserves_single_source_and_clips_without_wrapping() {
+        assert_eq!(mix_pcm16([1234].into_iter()), 1234);
+        assert_eq!(mix_pcm16([1234, 0].into_iter()), 1234);
+        assert_eq!(mix_pcm16([20000, 20000].into_iter()), i16::MAX);
+        assert_eq!(mix_pcm16([-20000, -20000].into_iter()), i16::MIN);
+        assert_eq!(mix_pcm16([-9000, 10000].into_iter()), 1000);
+    }
+    #[test]
+    fn independent_endpoint_clocks_align_to_common_origin() {
+        let mut output = PacketClock::default();
+        let mut microphone = PacketClock::default();
+        assert_eq!(output.target(10000, 480, true, 0), 480);
+        assert_eq!(microphone.target(90000, 960, true, 0), 960);
+        assert_eq!(output.target(10480, 959, true, 0), 960);
+        assert_eq!(microphone.target(90480, 1441, true, 0), 1440);
+    }
     #[test]
     fn delayed_real_packets_are_never_replaced_with_silence() {
         assert!(!should_fill_silence(true, 500));
