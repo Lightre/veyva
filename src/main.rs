@@ -1,7 +1,11 @@
 #[cfg(windows)]
 mod audio;
 #[cfg(windows)]
+mod audio_preferences;
+#[cfg(windows)]
 mod audio_timeline;
+#[cfg(windows)]
+mod background;
 mod capture;
 mod diagnostics;
 #[cfg(windows)]
@@ -91,9 +95,17 @@ fn main() -> std::process::ExitCode {
 }
 fn execute() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.is_empty() || args == ["gui"] {
+    if args.is_empty() || args == ["gui"] || args == ["gui", "--background"] {
         #[cfg(windows)]
         {
+            if args == ["gui", "--background"] {
+                unsafe {
+                    let _ = windows::Win32::System::Console::FreeConsole();
+                }
+            }
+            let Some(_instance) = background::SingleInstance::acquire()? else {
+                return Ok(());
+            };
             return gui::run().map_err(Into::into);
         }
         #[cfg(not(windows))]
