@@ -1,89 +1,55 @@
-# Desktop recording and replay manual checks
+# Manual testing
 
-Build with `cargo build --release --offline`, then run `target\release\veyva.exe gui`.
+Build and launch from the repository root:
 
-1. Build the new release and open the GUI. Replay must arm automatically with the configured history. Preferences can disable this startup behavior.
-2. Play ordinary audible content through the default Windows output device. Confirm System audio is on; otherwise report the visible audio error.
-3. Start normal recording, wait five seconds, Pause, wait five seconds, Resume, record another five seconds, then Finish & save. The saved duration should be about ten seconds plus keyframe/packet boundary effects, not fifteen. Confirm audible content and A/V alignment.
-4. While normal recording is running or paused, save replay by button and by Alt+F1 from another foreground application. Replay must continue independently; files should include recent history, not just normal-recording segments.
-5. Disable replay and continue normal recording. Finish it; both idle/paused flows should avoid GPU capture work. Turn replay back on and check history starts fresh.
-6. In Preferences, stop capture using the explicit action after recording/export completes. Change shortcut modifiers/function key and save. Test the new shortcut and a known occupied shortcut; conflicts must be visible.
-7. Close during a normal recording or replay export. The window should show stopping and close after finalization. Verify saved files can be played and seeked. Forced OS/process termination is not covered by graceful close.
-8. Report audio errors, drift, silent files, pause gaps or missing final clips with the corresponding Veyva log. Microphone and the timed CLI audio are intentionally outside this implementation.
+```powershell
+cargo build --release --offline
+.\target\release\veyva.exe gui
+```
 
+Omit `--offline` on the first build if dependencies are not cached. Recording tests capture desktop contents and selected audio sources. Keep test clips and logs outside version control.
 
-## Approved C layout and themes
+Record the Windows version, GPU/driver, monitor resolution/scaling and capture profile with test results. Check completed files in a media player, including duration, seeking, audio quality and synchronization. A successful build alone does not verify recording behavior.
 
-1. Build with `cargo build --release --offline`, then launch `target\release\veyva.exe gui`.
-2. With no theme setting, verify dark appearance. Select Light in the inspector, navigate Preferences/About, restart and verify Light persists. Restore Dark and repeat.
-3. Edit a capture preference without saving, change appearance, restart and verify the unsaved capture preference was not persisted.
-4. Resize from each edge/corner down to the minimum size. Check that transport, replay and inspector remain reachable by scrolling at 100%, 125% and 150% Windows scaling.
-5. Drag using the empty titlebar region, double-click it, minimize, maximize/restore and check Windows snap manually.
-6. Start recording, pause/resume, finish/save and save a replay. Check states and errors remain visible in both themes. Closing during recording must finalize safely before the window exits.
+## Recording and replay
 
-These are pending runtime checks; compile success is not playback or visual acceptance.
+1. Launch with replay-on-start enabled. Wait for history, save with the button and global shortcut, and verify the available duration. Short history must be reported accurately.
+2. Start recording, pause for five seconds, resume and finish. The pause must be removed from the saved timeline. Verify the first frames and seeking.
+3. Save replay while recording and while paused. Replay must remain independent. Disable replay while recording and verify recording continues.
+4. Exercise repeated saves, a small history budget, and a destination that cannot be written. Errors must be visible; existing files must remain unchanged.
+5. Compare cursor on/off in both flows, including screen edges and scaled output. DXGI may already include the cursor in desktop pixels; that embedded pointer cannot be removed by disabling separate cursor composition.
 
+## Preferences and shortcuts
 
-## Editable capture preferences and cursor
+1. Change resolution, FPS, bitrate or device selection. Changes must save automatically after editing finishes, with one replay restart after a short quiet interval. No restart should occur for each typed digit or while dragging a value.
+2. Change capture preferences during recording or export. Current capture must continue, and the interface must explain that the update is deferred until completion. New recordings must not use pending old settings.
+3. Enter invalid values. Verify an actionable error without repeated saves or restarts. Correct the value or retry after resolving an I/O failure.
+4. Assign each shortcut by pressing a modifier/key combination. Escape cancels; Delete clears to None. Duplicate bindings and OS registration conflicts must be reported. All bindings, including None, must survive restart.
+5. While assigning, verify no recording action fires and text does not enter other fields. Test global shortcuts with another application focused and while Veyva is hidden.
+6. Switch themes and restart. Appearance must persist without restarting capture. Static labels must not be selectable; editable paths must remain selectable.
 
-- Change resolution/FPS/audio in the inspector while replay is armed, then Apply. Verify a single restart, history reset and resumed buffering. Discard must restore the applied values in both views.
-- During recording, pause, finalization and replay export, verify Apply cannot interrupt the operation. Close during a pending apply and confirm no replacement session starts.
-- Test invalid/custom dimensions, failed encoder negotiation and retry using a supported preset. Errors must remain visible.
-- Record and save replay with Capture cursor enabled and disabled. Check moving pointer, text caret pointer shape, display edges and scaled output. DXGI may already embed a pointer in its desktop image; disabling separate-pointer composition cannot remove an embedded pointer.
-- Check scrollbar clearance in both themes at minimum size and 125%/150% DPI.
-- Compare capture overhead with cursor on/off on the same workload. Cursor composition adds a GPU desktop copy and a small cursor-region readback/upload; its overhead has not been measured.
+## Audio
 
+1. Refresh devices using the icon beside Audio. Select the output and optional microphone. Verify device selections persist after restart.
+2. Test system-only, microphone-only and mixed audio in normal recordings and replay. With microphone disabled, a newly started session must not capture the separate microphone source.
+3. Compare playback against the source for crackle, clipping and A/V drift. Use headphones to avoid acoustic echo. Windows microphone monitoring can also route microphone sound into the system output.
+4. Disconnect a selected device, select an unavailable endpoint, and test a device with a different sample rate/channel count. Unsupported negotiation or runtime failures must be visible.
 
-## Destination and transport controls
+## Window and background operation
 
-- Use the folder icon to choose a destination using the native folder picker. Cancel must preserve the existing path. The adjacent arrow opens the existing destination in Explorer. Manual path editing remains available.
-- Start recording: the main button becomes red Finish & save; Pause becomes Resume after pausing. Finish from either active or paused recording and verify MP4 playback. Saving disables transport until completion.
-- Verify repeated clicks cannot enqueue conflicting recording commands. Replay saving remains independent.
+1. With no saved window state, verify the window fits the monitor work area. Move/resize, close normally, and reopen. Position, size and maximized state must restore.
+2. Repeat after changing display scaling or disconnecting a monitor. Check minimum size, scrolling, popup placement and keyboard focus in both themes.
+3. Enable close-to-tray. The custom titlebar X must hide the window; a single tray click and Show Veyva must restore it. Save Replay must work while hidden.
+4. Alt+F4, taskbar Close and tray Quit must exit, finalizing any recording/export first. With close-to-tray disabled, the titlebar X must also exit. Verify the process terminates.
+5. Enable login startup, sign out/in and verify one hidden session, a visible tray icon and working replay shortcut. Disable startup and verify the Veyva entry is removed from the current user's Run registry key.
+6. Launch a second instance and verify it opens the existing window. Restart Windows Explorer and verify tray recovery. Tray failure must not leave an inaccessible hidden application.
+7. Move the executable and update the login-startup setting. Test lock/unlock and sleep/wake separately; do not assume device recovery is supported.
 
+## Reliability and performance
 
-## Keyboard shortcuts and filenames
+- Exercise long recording/replay sessions, recording plus replay export, repeated saves, disk-full/write failures and encoder-unavailable errors.
+- Compare capture off/on with the same workload. Record CPU/GPU use, memory, dropped frames, frame times and export latency. Measure visible and hidden modes separately.
+- Repeat cursor on/off and audio source combinations. History payload limits are not total-process memory limits.
+- Forced termination, power loss and Windows logoff may interrupt unfinished files. Keep those cases separate from normal graceful shutdown.
 
-- Preferences / Keyboard shortcuts: click each binding and enter a modifier plus key. Escape cancels; duplicate combinations are rejected. Bindings save automatically; press Delete while listening to clear to None. Restart and verify persistence. OS-reserved combinations must show registration errors.
-- Clear all three bindings and verify None persists without duplicate errors. Verify static labels cannot be selected while file path text remains selectable.
-- While assigning, verify no recording/replay action fires and typing does not edit other fields. Verify Ctrl+Shift+R starts/finishes recording, Ctrl+Shift+P pauses/resumes, and Alt+F1 saves replay while another application has focus.
-- Verify recording status has a drawn dot with no missing-font square. Verify filenames include local calendar date/time and retain unique suffixes.
-
-
-## Audio devices, microphone and background operation
-
-1. Refresh devices in Capture / Audio. Choose system output and microphone input, enable microphone, Apply, restart and verify selections persist. Compare output-only, microphone-only and mixed recordings/replays. Check synchronization, clipping, device disconnection and unavailable-device errors. Use headphones to avoid acoustic echo.
-2. Enable Keep running in the notification area when closed. Close the window, save a replay with the shortcut, then use the tray menu to Show Veyva or Save Replay. Quit must finalize active capture and terminate the process. With close-to-tray disabled, closing must exit normally.
-3. Enable Start replay in the background when I sign in. Sign out/in and verify one hidden session with a visible tray icon and working replay shortcut. Disable the setting and verify the Veyva HKCU Run entry is removed. Startup uses the current executable path; moving it requires re-enabling startup.
-4. Launch Veyva again while it runs: the existing window should appear without duplicate encoding or shortcut registration. Restart Windows Explorer and verify icon recovery. Tray failure must restore the window and prevent hiding.
-5. Measure hidden-mode CPU/GPU/memory on the target PC; hiding the GUI does not remove capture/encode costs. Abrupt Windows session termination/power loss has not been verified for recording finalization.
-
-Background and startup default to disabled; microphone also defaults to disabled. Audio device and microphone changes use Apply. Background toggles save immediately. No Windows service or elevated installation is involved.
-
-
-## Hidden tray command regression
-
-Hide Veyva using close-to-tray. A single left click or Show Veyva must restore it. Hide again and use Save Replay; the replay must save without revealing the window. Test the replay hotkey while hidden. Quit must restore the closing window if needed, finalize and exit. Repeat with login/background launch and a second executable launch. These checks remain manual; incremental Clippy does not verify native message delivery.
-
-
-## Tray shutdown deadlock regression
-
-Disable close-to-tray, close the window with replay active, and verify both the window and process exit after finalization. Repeat with replay stopped and via tray Quit. Then re-enable close-to-tray and verify Show, Save Replay and the global shortcut while hidden. Native wake routing must not read a same-process window title from a worker: GetWindowTextW can synchronously wait on the UI while the UI joins that worker. The wake helper now uses PID and pinned winit class metadata only; normal tray shutdown does not wake the exiting UI.
-
-
-## Automatic capture preference regression (current behavior)
-
-This supersedes Apply/Discard steps above: those buttons have been removed.
-- Uncheck Record microphone, wait for automatic replay restart/history reset, then record and save replay. The new session must omit the separate microphone source. Reopen and verify the preference persists.
-- Edit resolution/bitrate one digit at a time: no restart while text editing or dragging. After editing finishes, one update follows a 500 ms quiet interval. Invalid values must show an error without repeated disk writes/restarts; correct the value or use Retry saving.
-- Change microphone/quality during normal recording or replay export: current capture stays unchanged and the UI explains deferral. After completion, preferences apply automatically. A new recording/replay save must not use a stale pending configuration.
-- Verify saved status, persistence failure handling, replay arming state, and normal close/tray behavior.
-
-User-reported acceptance before this change: normal shutdown and tray Show/Save/Quit passed; existing preference persistence passed. Windows sign-in startup remains untested. The microphone report was made without confirmed Apply, so a backend microphone-disable defect was not established.
-
-
-## Window placement and explicit exit
-
-- With no window.ron, launch on a small desktop and check the titlebar/bottom edge stay within the taskbar work area. Resize/move the window, close normally, then reopen: position, size and maximized state should restore.
-- Repeat after changing display scaling or disconnecting the monitor used previously. Startup must keep the normal window within the nearest monitor work area; maximized windows use Windows maximization.
-- Enable close-to-tray: custom titlebar X must hide; Alt+F4 while the application has focus must finalize active capture and exit. Repeat with replay disabled, an active recording and an export. Taskbar Close also requests explicit exit.
-- Verify tray restore and startup/background launch still work. No real window/capture tests were launched by the agent. Window-only persistence is enabled; egui widget memory is not saved.
+The CLI measurement tool is documented in [PERFORMANCE.md](PERFORMANCE.md). Use reproducible steps and sanitized diagnostics in reports; avoid publishing private clips or personal paths.

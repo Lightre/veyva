@@ -5,7 +5,7 @@
 <p align="center"><strong>Keep the moment.</strong><br>A native Windows recorder with instant replay and hardware H.264 encoding.</p>
 <p align="center">Windows · Rust · H.264 + AAC · MP4</p>
 
-> **Development preview.** Features are implemented, but device compatibility, background operation and long-session performance still need manual acceptance. See [validation evidence](docs/VALIDATION.md).
+> **Development preview.** Features are implemented, but device compatibility, background operation and long-session performance still need manual acceptance. Use the [manual test checklist](docs/MANUAL-TEST.md) to verify a build on your hardware.
 
 ## Capture your way
 
@@ -78,18 +78,16 @@ cargo clippy --offline -- -D warnings
 cargo test --offline
 ```
 
-A first build/test may compile substantial Windows/GUI dependencies. Compilation is not proof of recording, audio or tray behavior. Follow the [manual acceptance checklist](docs/MANUAL-TEST.md) and record results in [VALIDATION.md](docs/VALIDATION.md).
+A first build/test may compile substantial Windows/GUI dependencies. Compilation is not proof of recording, audio or tray behavior. Follow the [manual acceptance checklist](docs/MANUAL-TEST.md) and include relevant results when reporting an issue or submitting a change.
 
 The interface uses eframe/egui 0.29.1; Windows bindings are pinned to 0.58.0. There is no additional web UI runtime.
 
 ## Project guide
 
-- [Design and native interface notes](docs/DESIGN.md)
 - [Manual testing](docs/MANUAL-TEST.md)
-- [Validation evidence and limitations](docs/VALIDATION.md)
 - [Performance measurement](docs/PERFORMANCE.md)
-- [Implementation roadmap and history](docs/PLAN.md)
-- [Upstream provenance](docs/REFERENCE.md)
+- [Contributing](CONTRIBUTING.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.txt)
 
 ## Licensing
 
