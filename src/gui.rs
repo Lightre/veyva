@@ -50,6 +50,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
         Theme::Dark => egui::Visuals::dark(),
         Theme::Light => egui::Visuals::light(),
     };
+    style.interaction.selectable_labels = false;
     style.visuals.panel_fill = p.background;
     style.visuals.window_fill = p.surface;
     let input_fill = match theme {
@@ -367,6 +368,9 @@ impl App {
             ),
             (2, self.applied.hotkey_modifiers, self.applied.hotkey_key),
         ] {
+            if key == 0 {
+                continue;
+            }
             let ctx = self.context.clone();
             match crate::hotkey::Hotkey::register(
                 modifiers,
@@ -443,33 +447,13 @@ impl App {
                 });
             }
             ui.add_space(12.0);
-            if ui
-                .add_enabled(
-                    self.listening_shortcut.is_none() && !self.closing,
-                    egui::Button::new("Save shortcuts"),
+            ui.label(
+                RichText::new(
+                    "Shortcuts save automatically. Delete clears a binding; Escape cancels.",
                 )
-                .clicked()
-            {
-                let result = self.settings.validate().and_then(|_| {
-                    if self.load_error.is_some() {
-                        return Err("Reset unreadable settings first".into());
-                    }
-                    let path = self.settings_path.as_ref().map_err(Clone::clone)?;
-                    let mut saved = Settings::load(path)?;
-                    copy_shortcuts(&mut saved, &self.settings);
-                    saved.save(path)
-                });
-                match result {
-                    Ok(()) => {
-                        let draft = self.settings;
-                        copy_shortcuts(&mut self.applied, &draft);
-                        self.bind_hotkey();
-                        self.notice = Some("Keyboard shortcuts saved.".into());
-                        self.error = None;
-                    }
-                    Err(error) => self.error = Some(error),
-                }
-            }
+                .small()
+                .color(palette.muted),
+            );
             if let Some(error) = &self.shortcut_error {
                 banner(ui, error, CORAL);
             }
@@ -502,14 +486,20 @@ impl App {
                             self.restore_shortcuts = true;
                             break;
                         }
-                        let mods = u32::from(modifiers.alt)
+                        let mut mods = u32::from(modifiers.alt)
                             | (u32::from(modifiers.ctrl) << 1)
                             | (u32::from(modifiers.shift) << 2)
                             | (u32::from(unsafe {
                                 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
                                 GetAsyncKeyState(0x5b) < 0 || GetAsyncKeyState(0x5c) < 0
                             }) << 3);
-                        if let Some(vk) = shortcut_key(key) {
+                        let captured = if key == egui::Key::Delete {
+                            mods = 0;
+                            Some(0)
+                        } else {
+                            shortcut_key(key)
+                        };
+                        if let Some(vk) = captured {
                             let mut candidate = self.settings;
                             match kind {
                                 0 => {
@@ -525,12 +515,24 @@ impl App {
                                     candidate.hotkey_key = vk;
                                 }
                             }
-                            match candidate.validate() {
+                            let result = (|| -> Result<(), String> {
+                                if self.load_error.is_some() {
+                                    return Err("Reset unreadable settings first".into());
+                                }
+                                // Validate only the shortcut update, preserving unrelated drafts.
+                                let path = self.settings_path.as_ref().map_err(Clone::clone)?;
+                                let mut saved = Settings::load(path)?;
+                                copy_shortcuts(&mut saved, &candidate);
+                                saved.save(path)
+                            })();
+                            match result {
                                 Ok(()) => {
-                                    self.settings = candidate;
+                                    copy_shortcuts(&mut self.settings, &candidate);
+                                    copy_shortcuts(&mut self.applied, &candidate);
                                     self.error = None;
                                     self.listening_shortcut = None;
                                     self.restore_shortcuts = true;
+                                    self.notice = Some("Shortcut saved.".into());
                                 }
                                 Err(error) => self.error = Some(error),
                             }

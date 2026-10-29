@@ -26,7 +26,7 @@ impl Hotkey {
         key: u32,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, String> {
-        if !crate::settings::valid_shortcut(modifiers, key) {
+        if key == 0 || !crate::settings::valid_shortcut(modifiers, key) {
             return Err("Choose a modifier and a supported key".into());
         }
         let stop = Arc::new(AtomicBool::new(false));
@@ -100,6 +100,9 @@ impl Drop for Hotkey {
     }
 }
 pub fn label(modifiers: u32, key: u32) -> String {
+    if modifiers == 0 && key == 0 {
+        return "None".into();
+    }
     let mut parts = Vec::new();
     for (flag, name) in [(2, "Ctrl"), (1, "Alt"), (4, "Shift"), (8, "Win")] {
         if modifiers & flag != 0 {

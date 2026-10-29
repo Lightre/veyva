@@ -150,7 +150,7 @@ impl Settings {
             if !valid_shortcut(modifiers, key) {
                 return Err("Shortcuts require a modifier and a supported key".into());
             }
-            if shortcuts[..index].contains(&(modifiers, key)) {
+            if key != 0 && shortcuts[..index].contains(&(modifiers, key)) {
                 return Err("Shortcuts must use distinct key combinations".into());
             }
         }
@@ -416,14 +416,32 @@ fn required(value: Option<u32>, key: &str) -> Result<u32, String> {
 }
 
 pub fn valid_shortcut(modifiers: u32, key: u32) -> bool {
-    (1..=15).contains(&modifiers)
-        && matches!(key, 0x30..=0x39 | 0x41..=0x5A | 0x70..=0x87
+    (modifiers == 0 && key == 0)
+        || (1..=15).contains(&modifiers)
+            && matches!(key, 0x30..=0x39 | 0x41..=0x5A | 0x70..=0x87
             | 0x09 | 0x0D | 0x20..=0x28 | 0x2D | 0x2E)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_shortcuts_round_trip_and_can_share_none() {
+        let settings = Settings {
+            hotkey_modifiers: 0,
+            hotkey_key: 0,
+            record_hotkey_modifiers: 0,
+            record_hotkey_key: 0,
+            pause_hotkey_modifiers: 0,
+            pause_hotkey_key: 0,
+            ..Default::default()
+        };
+        assert!(settings.validate().is_ok());
+        assert_eq!(Settings::from_text(&settings.to_text()).unwrap(), settings);
+        assert!(!valid_shortcut(1, 0));
+        assert!(!valid_shortcut(0, 0x41));
+    }
 
     #[test]
     fn action_shortcuts_round_trip_and_legacy_files_receive_defaults() {

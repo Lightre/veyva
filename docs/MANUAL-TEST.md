@@ -43,6 +43,7 @@ These are pending runtime checks; compile success is not playback or visual acce
 
 ## Keyboard shortcuts and filenames
 
-- Preferences / Keyboard shortcuts: click each binding and enter a modifier plus key. Escape cancels; duplicate combinations are rejected. Save shortcuts, restart and verify persistence. OS-reserved combinations must show registration errors.
+- Preferences / Keyboard shortcuts: click each binding and enter a modifier plus key. Escape cancels; duplicate combinations are rejected. Bindings save automatically; press Delete while listening to clear to None. Restart and verify persistence. OS-reserved combinations must show registration errors.
+- Clear all three bindings and verify None persists without duplicate errors. Verify static labels cannot be selected while file path text remains selectable.
 - While assigning, verify no recording/replay action fires and typing does not edit other fields. Verify Ctrl+Shift+R starts/finishes recording, Ctrl+Shift+P pauses/resumes, and Alt+F1 saves replay while another application has focus.
 - Verify recording status has a drawn dot with no missing-font square. Verify filenames include local calendar date/time and retain unique suffixes.
