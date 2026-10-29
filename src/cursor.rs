@@ -156,6 +156,8 @@ impl CursorCompositor {
                 self.shape.resize(bytes, 0);
                 let mut required = 0;
                 gfx.duplication
+                    .as_ref()
+                    .ok_or_else(|| RecorderError::Other("Desktop capture is reconnecting".into()))?
                     .GetFramePointerShape(
                         bytes as u32,
                         self.shape.as_mut_ptr().cast(),

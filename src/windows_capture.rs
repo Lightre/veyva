@@ -79,13 +79,33 @@ impl Drop for FrameTimer {
 }
 
 fn hr(e: windows::core::Error) -> RecorderError {
-    RecorderError::Other(format!("{} (0x{:08X})", e.message(), e.code().0 as u32))
+    let description = match e.code() {
+        DXGI_ERROR_ACCESS_LOST => "Desktop capture access was lost",
+        DXGI_ERROR_DEVICE_REMOVED => "The graphics device was removed",
+        DXGI_ERROR_DEVICE_RESET => "The graphics device was reset",
+        _ => "Windows capture operation failed",
+    };
+    RecorderError::Other(format!("{description} (0x{:08X})", e.code().0 as u32))
 }
 
 #[cfg(test)]
 mod frame_timer_tests {
     use super::FrameTimer;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn windows_capture_errors_do_not_use_localized_messages() {
+        let error = windows::core::Error::new(super::DXGI_ERROR_ACCESS_LOST, "localized message");
+        assert_eq!(
+            super::hr(error).to_string(),
+            "Desktop capture access was lost (0x887A0026)"
+        );
+        let error = windows::core::Error::new(super::E_FAIL, "localized message");
+        assert_eq!(
+            super::hr(error).to_string(),
+            "Windows capture operation failed (0x80004005)"
+        );
+    }
 
     #[test]
     fn high_resolution_timer_waits_for_deadline() {
@@ -152,7 +172,7 @@ pub(super) fn continuous(
     use std::sync::atomic::Ordering;
     let _mf = MfSession::new()?;
     let profile = settings.profile;
-    let gfx = GraphicsStack::create(settings.monitor)?;
+    let mut gfx = GraphicsStack::create(settings.monitor)?;
     let mut cursor = cursor::CursorCompositor::new(settings.capture_cursor);
     let mut encoder = HardwareEncoder::create(
         &gfx.device,
@@ -162,7 +182,7 @@ pub(super) fn continuous(
         profile.video_kbps,
         Codec::H264,
     )?;
-    let converter = ColorConverter::new(
+    let mut converter = ColorConverter::new(
         &gfx.device,
         &gfx.context,
         gfx.src_width,
@@ -219,6 +239,8 @@ pub(super) fn continuous(
     let mut dropped = 0u64;
     let mut have_frame = false;
     let mut last_packet_time = None;
+    let mut recovery_started: Option<Instant> = None;
+    let mut next_recovery = origin;
     while !stop.load(Ordering::Acquire) {
         if export.0.as_ref().is_some_and(|worker| worker.is_finished()) {
             let _ = export.0.take().unwrap().join();
@@ -371,6 +393,54 @@ pub(super) fn continuous(
         slot = slot.saturating_add(skipped);
         dropped = dropped.saturating_add(skipped);
         deadline += interval.mul_f64((skipped + 1) as f64);
+        if gfx.duplication.is_none() && Instant::now() >= next_recovery {
+            if recovery_started.is_some_and(|started| started.elapsed() >= Duration::from_secs(15))
+            {
+                return Err(RecorderError::Other(
+                    "Desktop capture could not reconnect within 15 seconds; arm replay to retry (DXGI_ERROR_ACCESS_LOST, 0x887A0026)".into(),
+                ));
+            }
+            match unsafe { gfx.output.DuplicateOutput(&gfx.device) } {
+                Ok(duplication) => {
+                    let desc = unsafe { duplication.GetDesc() };
+                    if desc.Rotation != DXGI_MODE_ROTATION_IDENTITY
+                        || desc.ModeDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+                    {
+                        return Err(RecorderError::Other(
+                            "The changed display mode is unsupported".into(),
+                        ));
+                    }
+                    converter = ColorConverter::new(
+                        &gfx.device,
+                        &gfx.context,
+                        desc.ModeDesc.Width,
+                        desc.ModeDesc.Height,
+                        profile.width,
+                        profile.height,
+                        profile.fps,
+                    )?;
+                    gfx.src_width = desc.ModeDesc.Width;
+                    gfx.src_height = desc.ModeDesc.Height;
+                    gfx.duplication = Some(duplication);
+                    cursor = cursor::CursorCompositor::new(settings.capture_cursor);
+                    recovery_started = None;
+                    if let Ok((mut log, _)) = Logger::open() {
+                        let _ = log.write("Desktop capture reconnected after access loss");
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.code(),
+                        DXGI_ERROR_ACCESS_LOST
+                            | DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
+                            | DXGI_ERROR_UNSUPPORTED
+                    ) || error.code() == windows::Win32::Foundation::E_ACCESSDENIED =>
+                {
+                    next_recovery = Instant::now() + Duration::from_millis(250);
+                }
+                Err(error) => return Err(hr(error)),
+            }
+        }
         encoder.drain(&mut packets)?;
         let mut fresh = Vec::with_capacity(packets.samples.len() + 8);
         unsafe {
@@ -404,11 +474,13 @@ pub(super) fn continuous(
             packets.bytes = 0;
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            match gfx
+            let acquired = gfx
                 .duplication
-                .AcquireNextFrame(0, &mut info, &mut resource)
-            {
-                Ok(()) => {
+                .as_ref()
+                .map(|duplication| duplication.AcquireNextFrame(0, &mut info, &mut resource));
+            match acquired {
+                None => {}
+                Some(Ok(())) => {
                     let converted = (|| {
                         let texture: ID3D11Texture2D = resource
                             .ok_or_else(|| RecorderError::Other("Empty desktop frame".into()))?
@@ -416,13 +488,23 @@ pub(super) fn continuous(
                             .map_err(hr)?;
                         cursor.convert(&gfx, &converter, &texture, &info)
                     })();
-                    let released = gfx.duplication.ReleaseFrame().map_err(hr);
+                    let released = gfx.duplication.as_ref().unwrap().ReleaseFrame().map_err(hr);
                     converted?;
                     released?;
                     have_frame = true;
                 }
-                Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
-                Err(error) => return Err(hr(error)),
+                Some(Err(error)) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
+                Some(Err(error)) if error.code() == DXGI_ERROR_ACCESS_LOST => {
+                    // Release the invalid interface before attempting DuplicateOutput again.
+                    gfx.duplication = None;
+                    have_frame = false;
+                    recovery_started = Some(Instant::now());
+                    next_recovery = Instant::now() + Duration::from_millis(250);
+                    if let Ok((mut log, _)) = Logger::open() {
+                        let _ = log.write("Desktop capture access lost (DXGI_ERROR_ACCESS_LOST, 0x887A0026); reconnecting for up to 15 seconds");
+                    }
+                }
+                Some(Err(error)) => return Err(hr(error)),
             }
             if have_frame {
                 match pool.AllocateSample() {
@@ -481,7 +563,9 @@ pub(super) fn continuous(
             }
         }
         let mut state = status.lock().unwrap_or_else(|e| e.into_inner());
-        state.phase = if replay_enabled {
+        state.phase = if recovery_started.is_some() {
+            "Reconnecting display"
+        } else if replay_enabled {
             "Replay armed"
         } else {
             "Capture ready"
@@ -900,7 +984,8 @@ impl Drop for RecordingPipe {
 struct GraphicsStack {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
-    pub duplication: IDXGIOutputDuplication,
+    pub duplication: Option<IDXGIOutputDuplication>,
+    output: IDXGIOutput1,
     pub adapter_name: String,
     pub vram_mb: u64,
     pub src_width: u32,
@@ -1014,7 +1099,8 @@ impl GraphicsStack {
             src_height: desc.ModeDesc.Height,
             device,
             context,
-            duplication,
+            duplication: Some(duplication),
+            output: output1,
             adapter_name,
             vram_mb: (adesc.DedicatedVideoMemory / (1024 * 1024)) as u64,
         })
@@ -1971,10 +2057,11 @@ pub fn run(
                 let call_start = Instant::now();
                 let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
                 let mut resource = None;
-                match gfx
-                    .duplication
-                    .AcquireNextFrame(0, &mut frame_info, &mut resource)
-                {
+                match gfx.duplication.as_ref().unwrap().AcquireNextFrame(
+                    0,
+                    &mut frame_info,
+                    &mut resource,
+                ) {
                     Ok(()) => {
                         // Convert before releasing the borrowed desktop surface. Only our NV12 output is retained.
                         let converted = (|| {
@@ -1984,7 +2071,7 @@ pub fn run(
                             let texture: ID3D11Texture2D = resource.cast().map_err(hr)?;
                             cursor.convert(&gfx, &converter, &texture, &frame_info)
                         })();
-                        let released = gfx.duplication.ReleaseFrame().map_err(hr);
+                        let released = gfx.duplication.as_ref().unwrap().ReleaseFrame().map_err(hr);
                         converted?;
                         released?;
                         have_frame = true;

@@ -1193,10 +1193,14 @@ impl App {
                     self.send(Command::SetReplayEnabled(armed));
                 }
             }
-            ui.label(format!(
-                "{:.1}s / {}s",
-                state.buffered_seconds, self.applied.profile.history_seconds
-            ));
+            if state.phase == "Reconnecting display" {
+                ui.label("Reconnecting display...");
+            } else {
+                ui.label(format!(
+                    "{:.1}s / {}s",
+                    state.buffered_seconds, self.applied.profile.history_seconds
+                ));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if action(
                     ui,

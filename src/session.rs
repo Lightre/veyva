@@ -137,6 +137,11 @@ pub fn start(settings: Settings) -> Result<Session, String> {
             })();
             let mut status = shared.lock().unwrap_or_else(|e| e.into_inner());
             status.phase = if result.is_ok() { "Stopped" } else { "Failed" }.into();
+            status.replay_enabled = false;
+            status.audio_active = false;
+            status.audio_levels = [0.0; 2];
+            status.buffered_seconds = 0.0;
+            status.buffer_bytes = 0;
             if let Err(error) = result {
                 status.error = Some(error.to_string());
             }

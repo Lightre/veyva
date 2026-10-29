@@ -65,3 +65,10 @@ The CLI measurement tool is documented in [PERFORMANCE.md](PERFORMANCE.md). Use 
 ## Captured audio level meters
 
 Play system audio and speak into the selected microphone during an active audio session. Each thin meter beneath its device selector must respond only to its own captured source, fall back to zero after silence and warn near full-scale. Test system-only, microphone-only, disabled sources, idle/no-session and device failure. Hover for captured peak dBFS. Meters represent pre-mix source peaks, not volume controls or a separate monitoring capture; changing a device follows the normal preference restart. Verify hidden mode adds no meter repaint timer.
+
+
+## Desktop capture reconnection
+
+With replay armed, minimize Veyva to the tray and enter/leave a fullscreen game. After a desktop duplication access loss, verify the log records `Desktop capture access lost` followed by `Desktop capture reconnected`, then save with the replay shortcut without toggling Armed. Repeat while recording; check playback, seeking and audio/video timing across the transition. The encoder and audio clock remain active; frames during the interruption are unavailable.
+
+Retries occur at 250 ms intervals for up to 15 seconds. If the display remains inaccessible, verify an English error with HRESULT is shown and Armed and audio indicators clear. Stop/exit must remain responsive during retries. Device removal/reset, adapter changes and unsupported display modes still require a manual restart; do not treat access-loss recovery as support for every GPU failure.
