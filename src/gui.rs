@@ -92,13 +92,18 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
 pub fn run() -> Result<(), String> {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/preview.png"))
         .map_err(|e| format!("Could not load app icon: {e}"))?;
+    let window_path = Settings::default_path()?.with_file_name("window.ron");
+    let first_launch = !window_path.exists();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Veyva")
             .with_decorations(false)
-            .with_inner_size([1180.0, 860.0])
-            .with_min_inner_size([1000.0, 740.0])
+            .with_app_id("Veyva")
+            .with_inner_size([1100.0, 720.0])
+            .with_min_inner_size([800.0, 400.0])
             .with_icon(icon),
+        centered: first_launch,
+        persistence_path: Some(window_path),
         ..Default::default()
     };
     eframe::run_native("Veyva", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
@@ -1297,6 +1302,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(receiver) = &self.device_scan {
             match receiver.try_recv() {
@@ -1407,6 +1416,7 @@ impl eframe::App for App {
             }
         }
         if self.pending_auto_start {
+            crate::background::fit_desktop_to_work_area();
             self.pending_auto_start = false;
             if self.load_error.is_none() {
                 self.bind_hotkey();
@@ -1462,14 +1472,15 @@ impl eframe::App for App {
                 }
             }
         }
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.closing
-            && ((self.background.close_to_tray
-                && self.tray.as_ref().is_some_and(|tray| tray.is_available()))
-                || self.active())
-        {
+        // Custom titlebar close follows close-to-tray; native close requests
+        // (Alt+F4 or taskbar Close) explicitly exit, finalizing asynchronously.
+        if ctx.input(|i| i.viewport().close_requested()) && self.active() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.close_window(ctx);
+            if !self.closing {
+                self.closing = true;
+                self.hidden = false;
+                self.send(Command::Stop);
+            }
         }
         if self.closing && !self.active() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

@@ -404,3 +404,54 @@ pub fn wake_desktop() {
         let _ = EnumWindows(Some(visit), LPARAM(0));
     }
 }
+
+/// Fit the restored window to its nearest monitor's usable desktop, including
+/// taskbar insets. Called once on the UI thread, never during user resizing.
+pub fn fit_desktop_to_work_area() {
+    unsafe extern "system" fn visit(window: HWND, _: LPARAM) -> BOOL {
+        use windows::Win32::Graphics::Gdi::*;
+        unsafe {
+            let mut pid = 0;
+            GetWindowThreadProcessId(window, Some(&mut pid));
+            if pid != std::process::id() {
+                return BOOL(1);
+            }
+            let mut class = [0u16; 64];
+            let len = GetClassNameW(window, &mut class);
+            if len <= 0 || String::from_utf16_lossy(&class[..len as usize]) != "Window Class" {
+                return BOOL(1);
+            }
+            if IsZoomed(window).as_bool() {
+                return BOOL(0);
+            }
+            let mut rect = RECT::default();
+            let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetWindowRect(window, &mut rect).is_ok()
+                && GetMonitorInfoW(monitor, &mut info).as_bool()
+            {
+                let work = info.rcWork;
+                let width = (rect.right - rect.left).min(work.right - work.left).max(1);
+                let height = (rect.bottom - rect.top).min(work.bottom - work.top).max(1);
+                let x = rect.left.clamp(work.left, work.right - width);
+                let y = rect.top.clamp(work.top, work.bottom - height);
+                let _ = SetWindowPos(
+                    window,
+                    None,
+                    x,
+                    y,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
+            BOOL(0)
+        }
+    }
+    unsafe {
+        let _ = EnumWindows(Some(visit), LPARAM(0));
+    }
+}
