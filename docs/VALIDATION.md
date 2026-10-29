@@ -67,3 +67,11 @@ Manual acceptance is in `docs/MANUAL-TEST.md`. Prior CLI playback, memory and CP
 Added independent normal recording and replay commands sharing a capture encoder, a bounded recording writer, system audio loopback/AAC and configurable replay hotkeys. Ten fast isolated tests passed: five settings/persistence/migration cases and five A/V history/pause-clock cases. The complete integrated application passes incremental compile and Clippy checks. A release build, actual hotkey registration, native window visual QA, real audio playback/synchronization, pause/resume export playback, and concurrent recording/replay runtime behavior have not been exercised by the agent.
 
 The Figma Capture frame and the separate recording/replay panel screenshots were inspected. This verifies the design artifact, not the native rendered UI. Prior silent CLI recordings do not verify the new A/V path. No screen or system-audio capture was launched for this change.
+
+## Audio crackle investigation
+
+A user reported continuous crackle in a desktop A/V recording. The supplied 22.33-second MP4 decoded as H.264 plus 48 kHz stereo AAC-LC without decoder errors; decoded peak level was approximately -13.9 dBFS, so simple full-scale clipping was not evident. The source sound was not available for comparison.
+
+The packet assembler previously recomputed an integer PCM-frame target from every WASAPI QPC timestamp. Even one-frame timestamp rounding/jitter could insert a zero frame or remove a PCM frame at each packet boundary. Packet alignment now anchors QPC once and follows the device sample position; large wall-clock discontinuities or device-position resets re-anchor, while ordinary packet timestamp jitter does not edit PCM. Real missing device frames still create a gap. Audio startup now logs the requested PCM16/48 kHz/stereo format and the native mix-format fields once.
+
+Four isolated alignment tests passed (timestamp jitter, genuine missing frames, silence/resume, reset/invalid timestamp), and integrated Clippy passed. No live audio capture or listening test was performed after this change. This addresses a concrete source of discontinuities but does not establish that it explains all of the reported crackle; manual comparison against the same source audio is required.

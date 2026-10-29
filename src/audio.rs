@@ -152,6 +152,19 @@ unsafe fn capture(
         &format,
         None,
     )?;
+    if let Ok(mix) = client.GetMixFormat() {
+        let native = std::ptr::read_unaligned(mix);
+        let (tag, rate, channels, bits) = (
+            native.wFormatTag,
+            native.nSamplesPerSec,
+            native.nChannels,
+            native.wBitsPerSample,
+        );
+        CoTaskMemFree(Some(mix.cast()));
+        if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+            let _=log.write(&format!("System audio format: requested PCM16 48000 Hz stereo; native mix tag={tag}, rate={rate}, channels={channels}, bits={bits}; sample-position packet alignment"));
+        }
+    }
     let capture: IAudioCaptureClient = client.GetService()?;
     let encoder = Encoder::new()?;
     client.Start()?;
@@ -164,6 +177,7 @@ unsafe fn capture(
         qpc as i128 * 10_000_000 / frequency as i128 - origin.elapsed().as_nanos() as i128 / 100;
     let _ = ready.try_send(Ok(()));
     let mut pending = Vec::<u8>::with_capacity(192_000);
+    let mut packet_clock = crate::audio_timeline::PacketClock::default();
     let mut frames_written = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
     while !stop.load(Ordering::Acquire) {
         // Bound both the PCM queue and work per poll, including on a broken driver.
@@ -175,21 +189,20 @@ unsafe fn capture(
             let mut frames = 0;
             let mut flags = 0;
             let mut qpc_position = 0u64;
+            let mut device_position = 0u64;
             capture.GetBuffer(
                 &mut data,
                 &mut frames,
                 &mut flags,
-                None,
+                Some(&mut device_position),
                 Some(&mut qpc_position),
             )?;
             // WASAPI QPC positions already use 100 ns units (not raw counter ticks).
             let valid_time = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0;
             let queued_end = frames_written + (pending.len() / 4) as i64;
-            let target = if valid_time {
-                (((qpc_position as i128 - origin_hns).max(0) * 48_000) / 10_000_000) as i64
-            } else {
-                queued_end
-            };
+            let qpc_frame =
+                (((qpc_position as i128 - origin_hns).max(0) * 48_000) / 10_000_000) as i64;
+            let target = packet_clock.target(device_position, qpc_frame, valid_time, queued_end);
             let gap = (target - queued_end).max(0) as usize;
             let trim = (queued_end - target).max(0).min(i64::from(frames)) as usize;
             let bytes = (frames as usize - trim) * 4;

@@ -1,5 +1,7 @@
 #[cfg(windows)]
 mod audio;
+#[cfg(windows)]
+mod audio_timeline;
 mod capture;
 mod diagnostics;
 #[cfg(windows)]
