@@ -5,7 +5,7 @@ pub fn choose_path(folder: &Path, timestamp: [u16; 7], replay: bool) -> Result<P
     let [year, month, day, hour, minute, second, millis] = timestamp;
     let kind = if replay { "replay" } else { "record" };
     let stem = format!(
-        "{year:04}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}-{millis:03}-{kind}"
+        "veyva-{year:04}-{month:02}-{day:02}_{hour:02}-{minute:02}-{second:02}-{millis:03}-{kind}"
     );
     // Bound collision probing. A concurrent publisher may still win the name;
     // the recording/export writer must retain its create-new/non-replace checks.
@@ -38,11 +38,11 @@ mod tests {
         let next = choose_path(&folder, [2098, 1, 2, 3, 4, 6, 0], true).unwrap();
         assert_eq!(
             first.file_name().unwrap(),
-            "2098-01-02_03-04-05-006-record.mp4"
+            "veyva-2098-01-02_03-04-05-006-record.mp4"
         );
         assert_eq!(
             next.file_name().unwrap(),
-            "2098-01-02_03-04-06-000-replay.mp4"
+            "veyva-2098-01-02_03-04-06-000-replay.mp4"
         );
         assert!(first < next);
     }
