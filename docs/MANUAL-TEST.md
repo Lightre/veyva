@@ -68,3 +68,14 @@ Hide Veyva using close-to-tray. A single left click or Show Veyva must restore i
 ## Tray shutdown deadlock regression
 
 Disable close-to-tray, close the window with replay active, and verify both the window and process exit after finalization. Repeat with replay stopped and via tray Quit. Then re-enable close-to-tray and verify Show, Save Replay and the global shortcut while hidden. Native wake routing must not read a same-process window title from a worker: GetWindowTextW can synchronously wait on the UI while the UI joins that worker. The wake helper now uses PID and pinned winit class metadata only; normal tray shutdown does not wake the exiting UI.
+
+
+## Automatic capture preference regression (current behavior)
+
+This supersedes Apply/Discard steps above: those buttons have been removed.
+- Uncheck Record microphone, wait for automatic replay restart/history reset, then record and save replay. The new session must omit the separate microphone source. Reopen and verify the preference persists.
+- Edit resolution/bitrate one digit at a time: no restart while text editing or dragging. After editing finishes, one update follows a 500 ms quiet interval. Invalid values must show an error without repeated disk writes/restarts; correct the value or use Retry saving.
+- Change microphone/quality during normal recording or replay export: current capture stays unchanged and the UI explains deferral. After completion, preferences apply automatically. A new recording/replay save must not use a stale pending configuration.
+- Verify saved status, persistence failure handling, replay arming state, and normal close/tray behavior.
+
+User-reported acceptance before this change: normal shutdown and tray Show/Save/Quit passed; existing preference persistence passed. Windows sign-in startup remains untested. The microphone report was made without confirmed Apply, so a backend microphone-disable defect was not established.
