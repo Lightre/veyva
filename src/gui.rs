@@ -52,21 +52,31 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
     };
     style.visuals.panel_fill = p.background;
     style.visuals.window_fill = p.surface;
-    style.visuals.extreme_bg_color = p.surface;
+    let input_fill = match theme {
+        Theme::Dark => Color32::from_rgb(15, 16, 18),
+        Theme::Light => Color32::from_rgb(228, 232, 227),
+    };
+    style.visuals.extreme_bg_color = input_fill;
     style.visuals.override_text_color = Some(p.text);
     style.visuals.selection.bg_fill = p.accent.gamma_multiply(0.25);
     style.visuals.selection.stroke.color = p.accent;
     style.visuals.widgets.inactive.bg_fill = p.surface;
-    style.visuals.widgets.inactive.weak_bg_fill = p.surface;
+    style.visuals.widgets.inactive.weak_bg_fill = input_fill;
     style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
     style.visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
     style.visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
     style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, p.border);
     style.visuals.widgets.hovered.bg_fill = p.accent.gamma_multiply(0.18);
-    style.visuals.widgets.hovered.weak_bg_fill = p.surface;
+    style.visuals.widgets.hovered.weak_bg_fill = input_fill;
     style.visuals.widgets.active.bg_fill = p.accent.gamma_multiply(0.3);
     style.spacing.scroll = egui::style::ScrollStyle::solid();
+    style.spacing.scroll.floating = true;
+    style.spacing.scroll.floating_allocated_width = 0.0;
+    style.spacing.scroll.bar_width = 6.0;
+    style.spacing.scroll.dormant_background_opacity = 0.0;
+    style.spacing.scroll.active_background_opacity = 0.0;
+    style.spacing.scroll.interact_background_opacity = 0.0;
     style.spacing.item_spacing = Vec2::new(12.0, 12.0);
     style.spacing.button_padding = Vec2::new(16.0, 10.0);
     style
@@ -331,8 +341,8 @@ impl App {
                 );
                 field(ui, "Frame rate", &mut self.settings.profile.fps, 1..=240, 1);
             });
-        ui.checkbox(&mut self.settings.audio_enabled, "Record system audio");
-        ui.checkbox(&mut self.settings.capture_cursor, "Capture cursor");
+        setting_checkbox(ui, &mut self.settings.audio_enabled, "Record system audio");
+        setting_checkbox(ui, &mut self.settings.capture_cursor, "Capture cursor");
     }
 
     fn bind_hotkey(&mut self) {
@@ -572,8 +582,24 @@ impl App {
         ui.separator();
         ui.add_space(8.0);
         ui.label("File destination");
-        ui.add(egui::TextEdit::singleline(&mut self.output).desired_width(ui.available_width()));
-        if ui.small_button("Open folder").clicked() {
+        let open_folder = egui::Frame::none()
+            .fill(ui.visuals().extreme_bg_color)
+            .rounding(6.0)
+            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 40.0).max(40.0);
+                    ui.add_sized(
+                        [width, 28.0],
+                        egui::TextEdit::singleline(&mut self.output).frame(false),
+                    );
+                    folder_button(ui, p)
+                })
+                .inner
+                .clicked()
+            })
+            .inner;
+        if open_folder {
             let path = PathBuf::from(self.output.trim());
             if path.is_dir() {
                 if let Err(error) = std::process::Command::new("explorer.exe").arg(path).spawn() {
@@ -830,14 +856,14 @@ impl App {
             ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. System audio uses the default Windows output device. Microphone capture is not included.").small().color(palette.muted));
             card(ui, |ui| {
                 ui.label(RichText::new("03 / AUDIO & BEHAVIOR").small().strong().color(palette.muted));
-                ui.checkbox(&mut self.settings.capture_cursor,"Capture cursor");
-                ui.checkbox(&mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
-                ui.checkbox(&mut self.settings.audio_enabled,"Record system audio");
+                setting_checkbox(ui, &mut self.settings.capture_cursor,"Capture cursor");
+                setting_checkbox(ui, &mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
+                setting_checkbox(ui, &mut self.settings.audio_enabled,"Record system audio");
                 ui.label(RichText::new("SAVE REPLAY SHORTCUT").small().strong().color(palette.muted));
                 ui.horizontal(|ui|{
                     for (flag,label) in [(1,"Alt"),(2,"Ctrl"),(4,"Shift"),(8,"Win")] {
                         let mut enabled=self.settings.hotkey_modifiers&flag!=0;
-                        if ui.checkbox(&mut enabled,label).changed(){if enabled{self.settings.hotkey_modifiers|=flag;}else{self.settings.hotkey_modifiers&=!flag;}}
+                        if setting_checkbox(ui, &mut enabled,label).changed(){if enabled{self.settings.hotkey_modifiers|=flag;}else{self.settings.hotkey_modifiers&=!flag;}}
                     }
                     egui::ComboBox::from_id_salt("hotkey-key").selected_text(format!("F{}",self.settings.hotkey_key-0x70+1)).show_ui(ui,|ui|{
                         for key in 0x70..=0x7B {ui.selectable_value(&mut self.settings.hotkey_key,key,format!("F{}",key-0x70+1));}
@@ -931,19 +957,27 @@ impl eframe::App for App {
                 .frame(
                     egui::Frame::none()
                         .fill(palette.background)
-                        .inner_margin(26.0)
+                        .inner_margin(egui::Margin {
+                            left: 26.0,
+                            right: 4.0,
+                            top: 26.0,
+                            bottom: 26.0,
+                        })
                         .stroke(egui::Stroke::new(1.0_f32, palette.border)),
                 )
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical()
                         .scroll_bar_visibility(
-                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
                         )
-                        .show(ui, |ui| self.inspector(ui));
+                        .show(ui, |ui| {
+                            scroll_content(ui, 22.0, |ui| self.inspector(ui));
+                        });
                 });
         }
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(palette.background).inner_margin(30.0)).show(ctx, |ui| {
-            egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(palette.background).inner_margin(egui::Margin { left: 30.0, right: 4.0, top: 30.0, bottom: 30.0 })).show(ctx, |ui| {
+            egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded).show(ui, |ui| {
+                scroll_content(ui, 26.0, |ui| {
                 if self.closing { banner(ui,"Finishing capture and closing safely...", palette.accent); }
                 if let Some(e) = self.load_error.clone() {
                     banner(ui,&format!("Settings could not be loaded: {e}"),CORAL);
@@ -971,6 +1005,7 @@ impl eframe::App for App {
                 }
                 if let Some(e) = &self.error { banner(ui,e,CORAL); }
                 if let Some(n) = &self.notice { banner(ui,n,palette.accent); }
+                });
             });
         });
         resize_edges(ctx);
@@ -1007,7 +1042,12 @@ fn field(
     speed: u32,
 ) {
     ui.label(name);
-    ui.add(egui::DragValue::new(value).range(range).speed(speed));
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size = Vec2::new(104.0, 34.0);
+        ui.visuals_mut().widgets.inactive.bg_fill = ui.visuals().extreme_bg_color;
+        ui.visuals_mut().widgets.inactive.rounding = egui::Rounding::same(6.0);
+        ui.add(egui::DragValue::new(value).range(range).speed(speed));
+    });
     ui.end_row();
 }
 
@@ -1144,4 +1184,59 @@ fn window_button(ui: &mut egui::Ui, control: WindowControl, palette: Palette) ->
         WindowControl::Restore => "Restore",
         WindowControl::Close => "Close",
     })
+}
+
+// A permanent gutter keeps the layout stable when a floating scrollbar appears.
+fn scroll_content(ui: &mut egui::Ui, gutter: f32, contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .inner_margin(egui::Margin {
+            right: gutter,
+            ..Default::default()
+        })
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            contents(ui);
+        });
+}
+
+fn folder_button(ui: &mut egui::Ui, palette: Palette) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Open folder")
+    });
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 4.0, palette.surface);
+    }
+    let r = egui::Rect::from_center_size(rect.center(), Vec2::new(16.0, 12.0));
+    let stroke = egui::Stroke::new(
+        1.4_f32,
+        if response.hovered() || response.has_focus() {
+            palette.accent
+        } else {
+            palette.muted
+        },
+    );
+    let points = vec![
+        r.left_bottom(),
+        r.left_top(),
+        r.left_top() + Vec2::new(6.0, 0.0),
+        r.left_top() + Vec2::new(8.0, 3.0),
+        r.right_top() + Vec2::new(0.0, 3.0),
+        r.right_bottom(),
+    ];
+    ui.painter().add(egui::Shape::closed_line(points, stroke));
+    response.on_hover_text("Open folder")
+}
+
+fn setting_checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
+    ui.scope(|ui| {
+        let border = ui.visuals().widgets.noninteractive.bg_stroke;
+        let accent = ui.visuals().selection.stroke;
+        ui.visuals_mut().widgets.inactive.bg_stroke = border;
+        ui.visuals_mut().widgets.hovered.bg_stroke = accent;
+        ui.visuals_mut().widgets.active.bg_stroke = accent;
+        ui.visuals_mut().widgets.inactive.fg_stroke = accent;
+        ui.add(egui::Checkbox::new(value, label))
+    })
+    .inner
 }
