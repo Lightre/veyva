@@ -32,3 +32,10 @@ These are pending runtime checks; compile success is not playback or visual acce
 - Record and save replay with Capture cursor enabled and disabled. Check moving pointer, text caret pointer shape, display edges and scaled output. DXGI may already embed a pointer in its desktop image; disabling separate-pointer composition cannot remove an embedded pointer.
 - Check scrollbar clearance in both themes at minimum size and 125%/150% DPI.
 - Compare capture overhead with cursor on/off on the same workload. Cursor composition adds a GPU desktop copy and a small cursor-region readback/upload; its overhead has not been measured.
+
+
+## Destination and transport controls
+
+- Use the folder icon to choose a destination using the native folder picker. Cancel must preserve the existing path. The adjacent arrow opens the existing destination in Explorer. Manual path editing remains available.
+- Start recording: the main button becomes red Finish & save; Pause becomes Resume after pausing. Finish from either active or paused recording and verify MP4 playback. Saving disables transport until completion.
+- Verify repeated clicks cannot enqueue conflicting recording commands. Replay saving remains independent.

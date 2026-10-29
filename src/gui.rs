@@ -112,6 +112,7 @@ enum Page {
 }
 
 struct App {
+    folder_picker: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
     page: Page,
     logo: egui::TextureHandle,
     settings: Settings,
@@ -165,6 +166,7 @@ impl App {
             })
             .unwrap_or_default();
         Self {
+            folder_picker: None,
             page: Page::Capture,
             logo,
             settings,
@@ -582,23 +584,38 @@ impl App {
         ui.separator();
         ui.add_space(8.0);
         ui.label("File destination");
-        let open_folder = egui::Frame::none()
+        let (choose_folder, open_folder) = egui::Frame::none()
             .fill(ui.visuals().extreme_bg_color)
             .rounding(6.0)
             .inner_margin(egui::Margin::symmetric(8.0, 4.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 40.0).max(40.0);
+                    let width = (ui.available_width() - 80.0).max(40.0);
                     ui.add_sized(
                         [width, 28.0],
                         egui::TextEdit::singleline(&mut self.output).frame(false),
                     );
-                    folder_button(ui, p)
+                    (
+                        folder_button(ui, p, false).clicked(),
+                        folder_button(ui, p, true).clicked(),
+                    )
                 })
                 .inner
-                .clicked()
             })
             .inner;
+        if choose_folder && self.folder_picker.is_none() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let ctx = self.context.clone();
+            match std::thread::Builder::new()
+                .name("veyva-folder-picker".into())
+                .spawn(move || {
+                    let _ = sender.send(choose_output_folder());
+                    ctx.request_repaint();
+                }) {
+                Ok(_) => self.folder_picker = Some(receiver),
+                Err(error) => self.error = Some(error.to_string()),
+            }
+        }
         if open_folder {
             let path = PathBuf::from(self.output.trim());
             if path.is_dir() {
@@ -667,29 +684,44 @@ impl App {
         });
         ui.add_space(42.0);
         ui.horizontal(|ui| {
-            let width = ((ui.available_width() - 24.0) / 3.0).max(130.0);
-            if action(
+            let width = ((ui.available_width() - 12.0) / 2.0).max(130.0);
+            let busy = state.finalizing || matches!(self.pending_command, Some((0, false)));
+            let enabled = !busy && !stopping && !self.closing && self.load_error.is_none();
+            let mut primary = p;
+            if state.recording {
+                primary.accent = Color32::from_rgb(190, 48, 65);
+                primary.accent_text = Color32::WHITE;
+            }
+            let label = if busy {
+                "Saving..."
+            } else if state.recording {
+                "Finish & save"
+            } else {
+                "Start recording"
+            };
+            if transport_button(
                 ui,
-                "Start recording",
+                label,
                 width,
-                !state.recording
-                    && !state.finalizing
-                    && !stopping
-                    && !self.closing
-                    && self.pending_apply.is_none()
-                    && self.load_error.is_none(),
-                Some(p),
+                enabled,
+                Some(primary),
+                if state.recording || busy { 1 } else { 0 },
             )
             .clicked()
             {
-                self.start_recording();
+                if state.recording {
+                    self.send(Command::FinishRecording);
+                } else {
+                    self.start_recording();
+                }
             }
-            if action(
+            if transport_button(
                 ui,
                 if state.paused { "Resume" } else { "Pause" },
                 width,
-                state.recording && !state.finalizing && !self.closing && !stopping,
+                state.recording && !busy && !stopping && !self.closing,
                 None,
+                if state.paused { 3 } else { 2 },
             )
             .clicked()
             {
@@ -698,17 +730,6 @@ impl App {
                 } else {
                     Command::PauseRecording
                 });
-            }
-            if action(
-                ui,
-                "Finish & save",
-                width,
-                state.recording && !state.finalizing && !self.closing && !stopping,
-                None,
-            )
-            .clicked()
-            {
-                self.send(Command::FinishRecording);
             }
         });
         ui.add_space(22.0);
@@ -893,6 +914,23 @@ impl eframe::App for App {
             };
             if acknowledged || !self.active() || state.error != self.pending_error {
                 self.pending_command = None;
+            }
+        }
+        if let Some(receiver) = &self.folder_picker {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    self.folder_picker = None;
+                    match result {
+                        Ok(Some(path)) => self.output = path,
+                        Ok(None) => {}
+                        Err(error) => self.error = Some(error),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.folder_picker = None;
+                    self.error = Some("Folder picker stopped unexpectedly".into());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
         if self.pending_apply.is_some() && !self.active() && !self.closing {
@@ -1199,10 +1237,14 @@ fn scroll_content(ui: &mut egui::Ui, gutter: f32, contents: impl FnOnce(&mut egu
         });
 }
 
-fn folder_button(ui: &mut egui::Ui, palette: Palette) -> egui::Response {
+fn folder_button(ui: &mut egui::Ui, palette: Palette, open: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::click());
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Open folder")
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            if open { "Open folder" } else { "Choose folder" },
+        )
     });
     if response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect, 4.0, palette.surface);
@@ -1224,8 +1266,17 @@ fn folder_button(ui: &mut egui::Ui, palette: Palette) -> egui::Response {
         r.right_top() + Vec2::new(0.0, 3.0),
         r.right_bottom(),
     ];
-    ui.painter().add(egui::Shape::closed_line(points, stroke));
-    response.on_hover_text("Open folder")
+    if open {
+        ui.painter()
+            .line_segment([r.left_bottom(), r.right_top()], stroke);
+        ui.painter()
+            .line_segment([r.right_top() - Vec2::new(7.0, 0.0), r.right_top()], stroke);
+        ui.painter()
+            .line_segment([r.right_top(), r.right_top() + Vec2::new(0.0, 7.0)], stroke);
+    } else {
+        ui.painter().add(egui::Shape::closed_line(points, stroke));
+    }
+    response.on_hover_text(if open { "Open folder" } else { "Choose folder" })
 }
 
 fn setting_checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
@@ -1239,4 +1290,91 @@ fn setting_checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::R
         ui.add(egui::Checkbox::new(value, label))
     })
     .inner
+}
+
+fn transport_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    enabled: bool,
+    palette: Option<Palette>,
+    icon: u8,
+) -> egui::Response {
+    let response = action(ui, label, width, enabled, palette);
+    let center = egui::pos2(response.rect.left() + 23.0, response.rect.center().y);
+    let color = if !enabled {
+        ui.visuals().weak_text_color()
+    } else {
+        palette.map_or(ui.visuals().text_color(), |p| p.accent_text)
+    };
+    let painter = ui.painter();
+    match icon {
+        0 => {
+            painter.circle_filled(center, 5.0, color);
+        }
+        1 => {
+            painter.rect_filled(
+                egui::Rect::from_center_size(center, Vec2::splat(10.0)),
+                1.0,
+                color,
+            );
+        }
+        2 => {
+            for x in [-3.0, 3.0] {
+                painter.rect_filled(
+                    egui::Rect::from_center_size(center + Vec2::new(x, 0.0), Vec2::new(3.0, 12.0)),
+                    0.0,
+                    color,
+                );
+            }
+        }
+        _ => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    center + Vec2::new(-4.0, -6.0),
+                    center + Vec2::new(6.0, 0.0),
+                    center + Vec2::new(-4.0, 6.0),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    response
+}
+
+fn choose_output_folder() -> Result<Option<String>, String> {
+    use windows::Win32::{System::Com::*, UI::Shell::*};
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(|e| e.to_string())?;
+        struct Apartment;
+        impl Drop for Apartment {
+            fn drop(&mut self) {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+        let _apartment = Apartment;
+        let result = (|| -> windows::core::Result<Option<String>> {
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            dialog.SetOptions(
+                dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR,
+            )?;
+            if let Err(error) = dialog.Show(None) {
+                if error.code().0 as u32 == 0x800704c7 {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+            let path = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let text = path.to_string();
+            CoTaskMemFree(Some(path.0.cast()));
+            Ok(Some(text?))
+        })();
+        result.map_err(|e| format!("Could not choose folder: {e}"))
+    }
 }
