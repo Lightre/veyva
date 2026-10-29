@@ -100,3 +100,37 @@ mod tests {
         assert_eq!(c.target(480, 0, false, 20480), 20480);
     }
 }
+
+/// Immediate peak attack and time-based release, independent of polling rate.
+pub fn meter_envelope(previous: f32, peak: u16, elapsed_seconds: f32) -> f32 {
+    let incoming = (f32::from(peak) / 32768.0).min(1.0);
+    let released = previous * (-elapsed_seconds.max(0.0) / 0.35).exp();
+    let level = incoming.max(released).clamp(0.0, 1.0);
+    if level < 0.001 {
+        0.0
+    } else {
+        level
+    }
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::meter_envelope;
+    #[test]
+    fn full_scale_silence_and_signed_minimum_are_safe() {
+        assert_eq!(meter_envelope(0.0, i16::MIN.unsigned_abs(), 0.005), 1.0);
+        assert_eq!(meter_envelope(0.0, 0, 0.005), 0.0);
+        assert_eq!(meter_envelope(1.0, 0, 5.0), 0.0);
+        assert!(meter_envelope(0.0, 16384, 0.005) >= 0.5);
+    }
+    #[test]
+    fn release_is_independent_of_poll_frequency() {
+        let single = meter_envelope(1.0, 0, 0.1);
+        let mut frequent = 1.0;
+        for _ in 0..20 {
+            frequent = meter_envelope(frequent, 0, 0.005);
+        }
+        assert!((single - frequent).abs() < 0.00001);
+        assert!(meter_envelope(0.1, 32768, 0.005) > 0.99);
+    }
+}

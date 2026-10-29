@@ -344,6 +344,7 @@ pub(super) fn continuous(
                 state.buffered_seconds = 0.0;
                 state.buffer_bytes = 0;
                 state.audio_active = audio.is_some();
+                state.audio_levels = audio.as_ref().map_or([0.0; 2], |capture| capture.levels());
             }
             std::thread::sleep(Duration::from_millis(50));
             slot = (origin.elapsed().as_nanos() * u128::from(profile.fps) / 1_000_000_000)
@@ -488,6 +489,7 @@ pub(super) fn continuous(
         .into();
         state.replay_enabled = replay_enabled;
         state.audio_active = audio.is_some();
+        state.audio_levels = audio.as_ref().map_or([0.0; 2], |capture| capture.levels());
         state.buffered_seconds = history.seconds();
         state.buffer_bytes = history.bytes;
         state.submitted = submitted;

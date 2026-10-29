@@ -5,7 +5,7 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, SyncSender},
         Arc, Mutex,
     },
@@ -28,6 +28,7 @@ pub(crate) struct AudioCapture {
     worker: Option<JoinHandle<()>>,
     packets: Receiver<AudioPacket>,
     error: Arc<Mutex<Option<String>>>,
+    levels: Arc<[AtomicU32; 2]>,
 }
 
 impl AudioCapture {
@@ -36,6 +37,8 @@ impl AudioCapture {
         system_enabled: bool,
         preferences: crate::audio_preferences::AudioPreferences,
     ) -> Result<Self, String> {
+        let levels = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+        let worker_levels = levels.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
         let (sender, packets) = mpsc::sync_channel(128);
@@ -53,8 +56,12 @@ impl AudioCapture {
                         &stop_worker,
                         &sender,
                         &ready_tx,
+                        &worker_levels,
                     )
                 };
+                for level in worker_levels.iter() {
+                    level.store(0, Ordering::Relaxed);
+                }
                 if let Err(message) = result {
                     *error_worker.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.clone());
                     let _ = ready_tx.try_send(Err(message));
@@ -67,6 +74,7 @@ impl AudioCapture {
                 worker: Some(worker),
                 packets,
                 error,
+                levels,
             }),
             result => {
                 stop.store(true, Ordering::Release);
@@ -84,6 +92,9 @@ impl AudioCapture {
     }
     pub fn drain(&mut self) -> Vec<AudioPacket> {
         self.packets.try_iter().take(128).collect()
+    }
+    pub fn levels(&self) -> [f32; 2] {
+        std::array::from_fn(|index| f32::from_bits(self.levels[index].load(Ordering::Relaxed)))
     }
     pub fn error(&self) -> Option<String> {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -124,6 +135,7 @@ unsafe fn run(
     stop: &AtomicBool,
     sender: &SyncSender<AudioPacket>,
     ready: &SyncSender<Result<(), String>>,
+    levels: &[AtomicU32; 2],
 ) -> Result<(), String> {
     CoInitializeEx(None, COINIT_MULTITHREADED)
         .ok()
@@ -133,7 +145,15 @@ unsafe fn run(
         return Err(format!("Initialize audio Media Foundation: {e}"));
     }
     let _runtime = Runtime;
-    let result = capture(origin, system_enabled, preferences, stop, sender, ready);
+    let result = capture(
+        origin,
+        system_enabled,
+        preferences,
+        stop,
+        sender,
+        ready,
+        levels,
+    );
     result.map_err(|e| format!("Audio capture: {e}"))
 }
 
@@ -176,6 +196,7 @@ impl Drop for AudioDiagnostics {
 }
 
 struct Source {
+    meter_index: usize,
     _endpoint: Endpoint,
     capture: IAudioCaptureClient,
     pending: Vec<u8>,
@@ -240,6 +261,7 @@ impl Source {
         let capture: IAudioCaptureClient = client.GetService()?;
         client.Start()?;
         Ok(Self {
+            meter_index: usize::from(is_input),
             _endpoint: Endpoint(client),
             capture,
             pending: Vec::with_capacity(192_000),
@@ -355,6 +377,7 @@ unsafe fn capture(
     stop: &AtomicBool,
     sender: &SyncSender<AudioPacket>,
     ready: &SyncSender<Result<(), String>>,
+    levels: &[AtomicU32; 2],
 ) -> windows::core::Result<()> {
     let first_frame = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
     let mut sources = Vec::with_capacity(2);
@@ -382,6 +405,7 @@ unsafe fn capture(
     let _ = ready.try_send(Ok(()));
     let mut frames_written = first_frame;
     let mut previous_poll = Instant::now();
+    let mut envelope = [0.0_f32; 2];
     while !stop.load(Ordering::Acquire) {
         let now = Instant::now();
         let mut backlogged = false;
@@ -392,7 +416,9 @@ unsafe fn capture(
                 .max(now.duration_since(previous_poll).as_millis());
             backlogged |= source.poll(origin, origin_hns, stop)?;
         }
+        let elapsed = now.duration_since(previous_poll).as_secs_f32();
         previous_poll = now;
+        let mut peaks = [0_u16; 2];
         // Each source owns its clock and bounded PCM history. Mix only when
         // both cover the same frame range; idle sources synthesize silence.
         while !sources.is_empty()
@@ -402,7 +428,11 @@ unsafe fn capture(
             let mut mixed = [0u8; 4096];
             for index in (0..4096).step_by(2) {
                 let sample = crate::audio_timeline::mix_pcm16(sources.iter().map(|source| {
-                    i16::from_le_bytes([source.pending[index], source.pending[index + 1]])
+                    let sample =
+                        i16::from_le_bytes([source.pending[index], source.pending[index + 1]]);
+                    peaks[source.meter_index] =
+                        peaks[source.meter_index].max(sample.unsigned_abs());
+                    sample
                 }));
                 mixed[index..index + 2].copy_from_slice(&sample.to_le_bytes());
             }
@@ -413,6 +443,11 @@ unsafe fn capture(
             }
             frames_written += 1024;
             encoder.output(sender)?;
+        }
+        for index in 0..2 {
+            envelope[index] =
+                crate::audio_timeline::meter_envelope(envelope[index], peaks[index], elapsed);
+            levels[index].store(envelope[index].to_bits(), Ordering::Relaxed);
         }
         if !backlogged {
             std::thread::sleep(Duration::from_millis(5));

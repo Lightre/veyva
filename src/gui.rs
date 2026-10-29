@@ -259,6 +259,16 @@ impl App {
     }
 
     fn audio_controls(&mut self, ui: &mut egui::Ui) {
+        let levels = if self.active() {
+            self.session
+                .as_ref()
+                .and_then(|session| session.status.lock().ok())
+                .filter(|state| state.audio_active)
+                .map_or([0.0; 2], |state| state.audio_levels)
+        } else {
+            [0.0; 2]
+        };
+        let palette = Palette::for_theme(self.settings.theme);
         ui.add_enabled_ui(
             self.pending_apply.is_none() && !self.closing && self.audio_load_error.is_none(),
             |ui| {
@@ -269,6 +279,7 @@ impl App {
                     &mut self.audio_preferences.output_device,
                     &self.audio_devices,
                 );
+                audio_level_meter(ui, levels[0], self.applied.audio_enabled, palette);
                 setting_checkbox(
                     ui,
                     &mut self.audio_preferences.microphone_enabled,
@@ -281,6 +292,12 @@ impl App {
                         true,
                         &mut self.audio_preferences.input_device,
                         &self.audio_devices,
+                    );
+                    audio_level_meter(
+                        ui,
+                        levels[1],
+                        self.applied_audio.microphone_enabled,
+                        palette,
                     );
                 });
             },
@@ -2009,4 +2026,46 @@ fn refresh_icon(ui: &mut egui::Ui, palette: Palette) -> egui::Response {
         egui::Stroke::NONE,
     ));
     response
+}
+
+fn audio_level_meter(ui: &mut egui::Ui, amplitude: f32, enabled: bool, palette: Palette) {
+    let amplitude = if enabled {
+        amplitude.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let normalized = if amplitude > 0.001 {
+        ((20.0 * amplitude.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 4.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, palette.surface);
+    if normalized > 0.0 {
+        let fill = egui::Rect::from_min_size(
+            rect.min,
+            Vec2::new(rect.width() * normalized, rect.height()),
+        );
+        ui.painter().rect_filled(
+            fill,
+            2.0,
+            if amplitude >= 0.95 {
+                CORAL
+            } else {
+                palette.accent
+            },
+        );
+    }
+    let label = if !enabled {
+        "Audio source disabled".into()
+    } else if amplitude <= 0.001 {
+        "No captured signal".into()
+    } else {
+        format!("Captured peak: {:.1} dBFS", 20.0 * amplitude.log10())
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, ui.is_enabled(), &label)
+    });
+    response.on_hover_text(label);
 }
