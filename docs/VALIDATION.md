@@ -99,3 +99,12 @@ Both editable Figma theme frames were visually inspected. No release build, GUI 
 Inspector and Preferences share a draft with Apply/Discard. Replay changes use asynchronous stop/restart; recording, finalization, export and pending commands guard application. Scrollbars reserve layout space. Cursor capture is persisted (default on for older files), connected to both capture paths and composed before scaling using DXGI pointer metadata.
 
 Incremental offline check and all-targets Clippy with warnings denied passed. The isolated cursor-setting compatibility test passed. Four cursor shape/clipping/blending unit tests compile but were not executed: dependency test compilation was stopped to respect the requested build budget. No release build, live GUI/capture test or overhead benchmark was performed. Embedded DXGI pointers cannot be removed by disabling separate pointer composition; cursor-region readback may introduce GPU synchronization cost.
+
+
+## Audio device and background foundation
+
+Added persistent WASAPI render/capture endpoint preferences, a bounded timestamp-aligned stereo PCM mixer feeding one AAC track, and microphone-only capture. Microphone defaults off. Background operation uses a native notification icon/message thread and the same desktop capture session; close-to-tray and per-user login startup default off. A named mutex prevents duplicate GUI sessions and a second launch requests the existing window. Hidden rendering skips page composition; capture/hotkey processing remains active.
+
+Release build, actual audio playback/device negotiation, hidden-window hotkeys, Windows login startup and Explorer recovery require the manual checks above. No runtime overhead claim is made. The mixed track has no echo cancellation or independently editable microphone track. Windows logoff/power loss finalization remains unverified.
+
+Combined incremental Clippy with warnings denied passed after integration. Seven standalone audio timing/mixing tests passed. No application, recorder or login task was launched by the agent.

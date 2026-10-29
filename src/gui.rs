@@ -113,6 +113,16 @@ enum Page {
 }
 
 struct App {
+    audio_preferences: crate::audio_preferences::AudioPreferences,
+    applied_audio: crate::audio_preferences::AudioPreferences,
+    audio_devices: Vec<crate::audio_preferences::AudioDevice>,
+    device_scan: Option<
+        std::sync::mpsc::Receiver<Result<Vec<crate::audio_preferences::AudioDevice>, String>>,
+    >,
+    audio_load_error: Option<String>,
+    background: crate::background::BackgroundPreferences,
+    tray: Option<crate::background::Tray>,
+    hidden: bool,
     folder_picker: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
     page: Page,
     logo: egui::TextureHandle,
@@ -168,7 +178,33 @@ impl App {
                     .into_owned()
             })
             .unwrap_or_default();
+        let audio_result = crate::audio_preferences::AudioPreferences::default_path()
+            .and_then(|path| crate::audio_preferences::AudioPreferences::load(&path));
+        let (audio_preferences, audio_load_error) = match audio_result {
+            Ok(value) => (value, None),
+            Err(error) => (Default::default(), Some(error)),
+        };
+        let background_result = crate::background::BackgroundPreferences::load();
+        let (background, background_error) = match background_result {
+            Ok(value) => (value, None),
+            Err(error) => (Default::default(), Some(error)),
+        };
+        let ctx = cc.egui_ctx.clone();
+        let tray_result =
+            crate::background::Tray::new(std::sync::Arc::new(move || ctx.request_repaint()));
+        let (tray, tray_error) = match tray_result {
+            Ok(value) => (Some(value), None),
+            Err(error) => (None, Some(error)),
+        };
         Self {
+            applied_audio: audio_preferences.clone(),
+            audio_preferences,
+            audio_devices: Vec::new(),
+            device_scan: None,
+            audio_load_error,
+            background,
+            tray,
+            hidden: false,
             folder_picker: None,
             page: Page::Capture,
             logo,
@@ -180,7 +216,7 @@ impl App {
             pending_error: None,
             settings_path,
             load_error,
-            error: None,
+            error: background_error.or(tray_error),
             notice: None,
             output,
             session: None,
@@ -192,6 +228,110 @@ impl App {
             shortcut_error: None,
             pending_auto_start: true,
         }
+    }
+
+    fn close_window(&mut self, ctx: &egui::Context) {
+        if self.background.close_to_tray
+            && self.tray.as_ref().is_some_and(|tray| tray.is_available())
+            && !self.closing
+        {
+            self.hidden = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else if self.active() {
+            self.closing = true;
+            self.send(Command::Stop);
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn audio_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled_ui(
+            self.pending_apply.is_none() && !self.closing && self.audio_load_error.is_none(),
+            |ui| {
+                audio_device_choice(
+                    ui,
+                    "System output",
+                    false,
+                    &mut self.audio_preferences.output_device,
+                    &self.audio_devices,
+                );
+                setting_checkbox(
+                    ui,
+                    &mut self.audio_preferences.microphone_enabled,
+                    "Record microphone",
+                );
+                ui.add_enabled_ui(self.audio_preferences.microphone_enabled, |ui| {
+                    audio_device_choice(
+                        ui,
+                        "Microphone input",
+                        true,
+                        &mut self.audio_preferences.input_device,
+                        &self.audio_devices,
+                    );
+                });
+            },
+        );
+        if ui
+            .add_enabled(
+                self.device_scan.is_none(),
+                egui::Button::new(if self.device_scan.is_some() {
+                    "Scanning..."
+                } else {
+                    "Refresh devices"
+                }),
+            )
+            .clicked()
+        {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let ctx = self.context.clone();
+            match std::thread::Builder::new()
+                .name("veyva-device-scan".into())
+                .spawn(move || {
+                    let _ = sender.send(crate::audio_preferences::devices());
+                    ctx.request_repaint();
+                }) {
+                Ok(_) => self.device_scan = Some(receiver),
+                Err(error) => self.error = Some(error.to_string()),
+            }
+        }
+        ui.label(RichText::new("Apply changes above to save devices and restart replay. Headphones help prevent microphone echo.").small().color(ui.visuals().weak_text_color()));
+        if let Some(error) = &self.audio_load_error {
+            banner(ui, error, CORAL);
+        }
+    }
+
+    fn background_controls(&mut self, ui: &mut egui::Ui) {
+        card(ui, |ui| {
+            ui.label(RichText::new("05 / BACKGROUND & STARTUP").small().strong());
+            let mut candidate = self.background;
+            let close_changed = setting_checkbox(
+                ui,
+                &mut candidate.close_to_tray,
+                "Keep running in the notification area when closed",
+            )
+            .changed();
+            let startup_changed = setting_checkbox(
+                ui,
+                &mut candidate.start_with_windows,
+                "Start replay in the background when I sign in",
+            )
+            .changed();
+            ui.label(RichText::new("Both options are off by default. Use the Veyva tray menu to open the window, save a replay or quit completely. Background capture uses your selected quality and history budget.").small().color(ui.visuals().weak_text_color()));
+            if close_changed || startup_changed {
+                if !self.tray.as_ref().is_some_and(|tray| tray.is_available()) {
+                    self.error = Some("The notification icon is unavailable; background mode cannot be enabled safely.".into());
+                } else {
+                    match candidate.save() {
+                        Ok(()) => {
+                            self.background = candidate;
+                            self.notice = Some("Background preferences saved.".into());
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
+            }
+        });
     }
 
     fn active(&self) -> bool {
@@ -263,7 +403,14 @@ impl App {
         {
             return;
         }
-        if let Err(error) = self.persist() {
+        if let Some(error) = &self.audio_load_error {
+            self.error = Some(error.clone());
+            return;
+        }
+        if let Err(error) = self.persist().and_then(|_| {
+            crate::audio_preferences::AudioPreferences::default_path()
+                .and_then(|path| self.audio_preferences.save(&path))
+        }) {
             self.error = Some(error);
             return;
         }
@@ -277,6 +424,7 @@ impl App {
             self.send(Command::Stop);
         } else {
             self.applied = self.settings;
+            self.applied_audio = self.audio_preferences.clone();
             self.bind_hotkey();
             self.notice = Some("Preferences applied. New captures use these settings.".into());
         }
@@ -301,7 +449,10 @@ impl App {
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    !busy && self.load_error.is_none() && self.settings != self.applied,
+                    !busy
+                        && self.load_error.is_none()
+                        && (self.settings != self.applied
+                            || self.audio_preferences != self.applied_audio),
                     egui::Button::new("Apply changes"),
                 )
                 .clicked()
@@ -310,12 +461,15 @@ impl App {
             }
             if ui
                 .add_enabled(
-                    !busy && self.settings != self.applied,
+                    !busy
+                        && (self.settings != self.applied
+                            || self.audio_preferences != self.applied_audio),
                     egui::Button::new("Discard changes"),
                 )
                 .clicked()
             {
                 self.settings = self.applied;
+                self.audio_preferences = self.applied_audio.clone();
             }
         });
         ui.label(
@@ -323,7 +477,8 @@ impl App {
                 "Applying preferences..."
             } else if busy {
                 "Apply after recording and exports finish."
-            } else if self.settings != self.applied {
+            } else if self.settings != self.applied || self.audio_preferences != self.applied_audio
+            {
                 "Unsaved changes. Applying restarts active replay and clears its history."
             } else {
                 "All preferences applied."
@@ -703,12 +858,7 @@ impl App {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                         if window_button(ui, WindowControl::Close, p).clicked() {
-                            if self.active() {
-                                self.closing = true;
-                                self.send(Command::Stop);
-                            } else {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
+                            self.close_window(ctx);
                         }
                         let control = if maximized {
                             WindowControl::Restore
@@ -759,7 +909,7 @@ impl App {
         ui.add_space(8.0);
         ui.label(RichText::new("Audio").size(18.0).strong());
         let label = if state.audio_active {
-            "System audio active"
+            "Audio capture active"
         } else if self.active() && self.settings.audio_enabled {
             "System audio starting / unavailable"
         } else if self.settings.audio_enabled {
@@ -775,15 +925,7 @@ impl App {
             },
             label,
         );
-        ui.label(
-            RichText::new("Default Windows output device")
-                .small()
-                .color(p.muted),
-        );
-        ui.add_enabled(
-            false,
-            egui::Checkbox::new(&mut false, "Microphone · Coming later"),
-        );
+        self.audio_controls(ui);
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
@@ -1038,7 +1180,7 @@ impl App {
         if let Some(error) = state.audio_error {
             banner(
                 ui,
-                &format!("System audio unavailable: {error}. Files may contain video only."),
+                &format!("Audio capture unavailable: {error}. Files may contain video only."),
                 CORAL,
             );
         }
@@ -1087,7 +1229,7 @@ impl App {
                 });
             });
             ui.add_space(8.0);
-            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. System audio uses the default Windows output device. Microphone capture is not included.").small().color(palette.muted));
+            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. Audio devices and microphone capture are configured in the Capture inspector.").small().color(palette.muted));
             card(ui, |ui| {
                 ui.label(RichText::new("03 / AUDIO & BEHAVIOR").small().strong().color(palette.muted));
                 setting_checkbox(ui, &mut self.settings.capture_cursor,"Capture cursor");
@@ -1099,12 +1241,64 @@ impl App {
         });
         ui.add_space(12.0);
         self.shortcuts(ui);
+        ui.add_space(12.0);
+        self.background_controls(ui);
         self.apply_controls(ui);
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(receiver) = &self.device_scan {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    self.device_scan = None;
+                    match result {
+                        Ok(devices) => self.audio_devices = devices,
+                        Err(error) => self.error = Some(error),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.device_scan = None;
+                    self.error = Some("Audio device scan stopped unexpectedly".into());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.hidden && !self.tray.as_ref().is_some_and(|tray| tray.is_available()) {
+            self.hidden = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            self.error = Some("Notification icon unavailable; the window was restored.".into());
+        }
+        let events = self
+            .tray
+            .as_ref()
+            .map(|tray| tray.take_events())
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                crate::background::TrayEvent::Show => {
+                    self.hidden = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                crate::background::TrayEvent::SaveReplay => self.save_replay(),
+                crate::background::TrayEvent::Quit => {
+                    self.hidden = false;
+                    self.closing = true;
+                    self.send(Command::Stop);
+                }
+            }
+        }
+        if self.pending_auto_start
+            && std::env::args().any(|arg| arg == "--background")
+            && self.tray.as_ref().is_some_and(|tray| tray.is_available())
+        {
+            self.hidden = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
         if let Some((kind, target)) = self.pending_command {
             let state = self
                 .session
@@ -1148,6 +1342,7 @@ impl eframe::App for App {
                 .and_then(|s| s.error.clone());
             self.session = None;
             self.applied = self.settings;
+            self.applied_audio = self.audio_preferences.clone();
             self.bind_hotkey();
             if let Some(error) = stop_error {
                 self.error = Some(format!("Capture stopped with an error: {error}. Preferences were saved; arm replay to retry."));
@@ -1165,8 +1360,13 @@ impl eframe::App for App {
             self.pending_auto_start = false;
             if self.load_error.is_none() {
                 self.bind_hotkey();
-                if self.settings.replay_auto_start {
+                if self.settings.replay_auto_start
+                    || std::env::args().any(|arg| arg == "--background")
+                {
                     self.start();
+                    if std::env::args().any(|arg| arg == "--background") && self.active() {
+                        self.send(Command::SetReplayEnabled(true));
+                    }
                 }
             }
         }
@@ -1212,18 +1412,33 @@ impl eframe::App for App {
                 }
             }
         }
-        if ctx.input(|i| i.viewport().close_requested()) && self.active() {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.closing
+            && ((self.background.close_to_tray
+                && self.tray.as_ref().is_some_and(|tray| tray.is_available()))
+                || self.active())
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if !self.closing {
-                self.closing = true;
-                self.send(Command::Stop);
-            }
+            self.close_window(ctx);
         }
         if self.closing && !self.active() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if self.active() || self.closing || self.pending_apply.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(250));
+            ctx.request_repaint_after(Duration::from_millis(if self.hidden { 1000 } else { 250 }));
+        }
+        if self.hidden
+            && self
+                .session
+                .as_ref()
+                .and_then(|session| session.status.lock().ok())
+                .is_some_and(|state| state.error.is_some())
+        {
+            self.hidden = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        }
+        if self.hidden {
+            return;
         }
         self.titlebar(ctx);
         let palette = Palette::for_theme(self.settings.theme);
@@ -1275,7 +1490,7 @@ impl eframe::App for App {
                             ui.label(RichText::new("Recording and replay, together.").size(22.0).strong());
                             ui.label("One hardware encoder powers normal recording and replay history. Replay arms when Veyva opens unless disabled in Preferences.");
                             ui.separator();
-                            ui.label("System audio and configurable replay shortcuts are supported. Microphone capture and tray controls are not included.");
+                            ui.label("System audio, microphone capture, configurable shortcuts and background tray controls are supported.");
                             ui.label(RichText::new("No account. No telemetry. No cloud upload.").color(palette.accent));
                         });
                     }
@@ -1656,4 +1871,33 @@ fn shortcut_key(key: egui::Key) -> Option<u32> {
         egui::Key::PageDown => 0x22,
         _ => return None,
     })
+}
+
+fn audio_device_choice(
+    ui: &mut egui::Ui,
+    label: &str,
+    input: bool,
+    selected: &mut Option<String>,
+    devices: &[crate::audio_preferences::AudioDevice],
+) {
+    ui.label(label);
+    let text = selected
+        .as_ref()
+        .map(|id| {
+            devices
+                .iter()
+                .find(|device| &device.id == id)
+                .map(|device| device.name.as_str())
+                .unwrap_or("Saved device (refresh to resolve)")
+        })
+        .unwrap_or("Windows default");
+    egui::ComboBox::from_id_salt(label)
+        .width((ui.available_width() - 12.0).max(100.0))
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(selected, None, "Windows default");
+            for device in devices.iter().filter(|device| device.is_input == input) {
+                ui.selectable_value(selected, Some(device.id.clone()), &device.name);
+            }
+        });
 }

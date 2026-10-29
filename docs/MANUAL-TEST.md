@@ -47,3 +47,14 @@ These are pending runtime checks; compile success is not playback or visual acce
 - Clear all three bindings and verify None persists without duplicate errors. Verify static labels cannot be selected while file path text remains selectable.
 - While assigning, verify no recording/replay action fires and typing does not edit other fields. Verify Ctrl+Shift+R starts/finishes recording, Ctrl+Shift+P pauses/resumes, and Alt+F1 saves replay while another application has focus.
 - Verify recording status has a drawn dot with no missing-font square. Verify filenames include local calendar date/time and retain unique suffixes.
+
+
+## Audio devices, microphone and background operation
+
+1. Refresh devices in Capture / Audio. Choose system output and microphone input, enable microphone, Apply, restart and verify selections persist. Compare output-only, microphone-only and mixed recordings/replays. Check synchronization, clipping, device disconnection and unavailable-device errors. Use headphones to avoid acoustic echo.
+2. Enable Keep running in the notification area when closed. Close the window, save a replay with the shortcut, then use the tray menu to Show Veyva or Save Replay. Quit must finalize active capture and terminate the process. With close-to-tray disabled, closing must exit normally.
+3. Enable Start replay in the background when I sign in. Sign out/in and verify one hidden session with a visible tray icon and working replay shortcut. Disable the setting and verify the Veyva HKCU Run entry is removed. Startup uses the current executable path; moving it requires re-enabling startup.
+4. Launch Veyva again while it runs: the existing window should appear without duplicate encoding or shortcut registration. Restart Windows Explorer and verify icon recovery. Tray failure must restore the window and prevent hiding.
+5. Measure hidden-mode CPU/GPU/memory on the target PC; hiding the GUI does not remove capture/encode costs. Abrupt Windows session termination/power loss has not been verified for recording finalization.
+
+Background and startup default to disabled; microphone also defaults to disabled. Audio device and microphone changes use Apply. Background toggles save immediately. No Windows service or elevated installation is involved.

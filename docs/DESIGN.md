@@ -12,4 +12,6 @@ The custom titlebar provides a drag region, double-click maximize/restore, minim
 
 Both Figma frames contain editable layout/text and imported Simple Design System button instances. Their screenshots were inspected. The native egui translation reuses the embedded Veyva icon and existing command/session interface; it does not use a screenshot as the UI. Native rendering has not been visually verified and its default font differs from Figma Inter.
 
-The inspector reports actual capture configuration and audio state. Quality, frame rate, monitor and system audio are edited in Preferences. Recording area is currently the entire display; system audio uses the default Windows output device. No device chooser or volume control is presented as functional. Microphone is explicitly unavailable. Output folder remains session-local.
+The inspector reports actual capture configuration and audio state. Quality, frame rate, monitor and system audio are edited in Preferences. Recording area is currently the entire display; audio endpoints are selectable in Capture / Audio. Device selection is implemented; gain controls are not included. Microphone is optional and defaults off. Output folder remains session-local.
+
+Background preferences default off. Close-to-tray retains the existing session; per-user Windows login startup launches `gui --background` and arms replay. The tray menu exposes Show, Save Replay and Quit. These runtime paths require manual acceptance.
