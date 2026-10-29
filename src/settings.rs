@@ -1,5 +1,10 @@
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 /// Initial product defaults. These are targets, not measured performance results.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CaptureProfile {
     pub width: u32,
     pub height: u32,
@@ -23,6 +28,57 @@ impl CaptureProfile {
         }
     }
 
+    pub const fn balanced() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            video_kbps: 6000,
+            audio_kbps: 128,
+            history_seconds: 60,
+            replay_budget_mib: 96,
+        }
+    }
+
+    pub const fn high() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            video_kbps: 12000,
+            audio_kbps: 128,
+            history_seconds: 60,
+            replay_budget_mib: 192,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(320..=7680).contains(&self.width) || !self.width.is_multiple_of(2) {
+            return Err("width must be even and between 320 and 7680".into());
+        }
+        if !(180..=4320).contains(&self.height) || !self.height.is_multiple_of(2) {
+            return Err("height must be even and between 180 and 4320".into());
+        }
+        if !(1..=240).contains(&self.fps) {
+            return Err("fps must be between 1 and 240".into());
+        }
+        if !(250..=100_000).contains(&self.video_kbps) {
+            return Err("video_kbps must be between 250 and 100000".into());
+        }
+        if self.audio_kbps != 128 {
+            return Err(
+                "audio_kbps is fixed at 128 because audio settings are not implemented".into(),
+            );
+        }
+        if !(5..=600).contains(&self.history_seconds) {
+            return Err("history_seconds must be between 5 and 600".into());
+        }
+        if !(16..=512).contains(&self.replay_budget_mib) {
+            return Err("replay_budget_mib must be between 16 and 512".into());
+        }
+        Ok(())
+    }
+
     /// Nominal compressed A/V payload, excluding allocator, GPU and muxer overhead.
     pub fn payload_mib(self) -> f64 {
         (f64::from(self.video_kbps) + f64::from(self.audio_kbps))
@@ -30,5 +86,236 @@ impl CaptureProfile {
             * f64::from(self.history_seconds)
             / 8.0
             / 1_048_576.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settings {
+    pub profile: CaptureProfile,
+    pub monitor: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            profile: CaptureProfile::low_end(),
+            monitor: 0,
+        }
+    }
+}
+
+impl Settings {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        match fs::read_to_string(path) {
+            Ok(contents) => Self::from_text(&contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(format!("could not read settings: {error}")),
+        }
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.profile.validate()?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create settings directory: {e}"))?;
+
+        static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| "settings path has no file name".to_string())?;
+        let (mut file, selected_path) = loop {
+            let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+            let mut name = file_name.to_os_string();
+            name.push(format!(".{}.{}.tmp", std::process::id(), id));
+            let temp_path = parent.join(name);
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)
+            {
+                Ok(file) => break (file, temp_path.clone()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!("could not create temporary settings file: {error}"))
+                }
+            }
+        };
+
+        let result = (|| {
+            file.write_all(self.to_text().as_bytes())
+                .map_err(|e| format!("could not write settings: {e}"))?;
+            file.sync_all()
+                .map_err(|e| format!("could not sync settings: {e}"))?;
+            drop(file);
+            fs::rename(&selected_path, path)
+                .map_err(|e| format!("could not replace settings file: {e}"))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(selected_path);
+        }
+        result
+    }
+
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        let mut candidate = *self;
+        let parsed = value
+            .parse::<u32>()
+            .map_err(|_| format!("{key} must be an unsigned integer"))?;
+        match key {
+            "width" => candidate.profile.width = parsed,
+            "height" => candidate.profile.height = parsed,
+            "fps" => candidate.profile.fps = parsed,
+            "video_kbps" => candidate.profile.video_kbps = parsed,
+            "history_seconds" => candidate.profile.history_seconds = parsed,
+            "replay_budget_mib" => candidate.profile.replay_budget_mib = parsed,
+            "monitor" => candidate.monitor = parsed,
+            "audio_kbps" => {
+                return Err(
+                    "audio_kbps cannot be changed because audio settings are not implemented"
+                        .into(),
+                )
+            }
+            _ => return Err(format!("unknown setting: {key}")),
+        }
+        candidate.profile.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub fn to_text(self) -> String {
+        format!(
+            "version=1\nwidth={}\nheight={}\nfps={}\nvideo_kbps={}\naudio_kbps={}\nhistory_seconds={}\nreplay_budget_mib={}\nmonitor={}\n",
+            self.profile.width,
+            self.profile.height,
+            self.profile.fps,
+            self.profile.video_kbps,
+            self.profile.audio_kbps,
+            self.profile.history_seconds,
+            self.profile.replay_budget_mib,
+            self.monitor,
+        )
+    }
+
+    fn from_text(contents: &str) -> Result<Self, String> {
+        let mut version = None;
+        let mut width = None;
+        let mut height = None;
+        let mut fps = None;
+        let mut video_kbps = None;
+        let mut audio_kbps = None;
+        let mut history_seconds = None;
+        let mut replay_budget_mib = None;
+        let mut monitor = None;
+
+        for (index, line) in contents.lines().enumerate() {
+            let (key, value) = line
+                .split_once('=')
+                .ok_or_else(|| format!("malformed settings line {}", index + 1))?;
+            if key.is_empty() || value.is_empty() || value.contains('=') {
+                return Err(format!("malformed settings line {}", index + 1));
+            }
+            let slot = match key {
+                "version" => &mut version,
+                "width" => &mut width,
+                "height" => &mut height,
+                "fps" => &mut fps,
+                "video_kbps" => &mut video_kbps,
+                "audio_kbps" => &mut audio_kbps,
+                "history_seconds" => &mut history_seconds,
+                "replay_budget_mib" => &mut replay_budget_mib,
+                "monitor" => &mut monitor,
+                _ => return Err(format!("unknown setting: {key}")),
+            };
+            if slot.is_some() {
+                return Err(format!("duplicate setting: {key}"));
+            }
+            *slot = Some(
+                value
+                    .parse::<u32>()
+                    .map_err(|_| format!("invalid integer for {key}"))?,
+            );
+        }
+
+        match version {
+            Some(1) => {}
+            Some(_) => return Err("unsupported settings version".into()),
+            None => return Err("missing settings version".into()),
+        }
+        let profile = CaptureProfile {
+            width: required(width, "width")?,
+            height: required(height, "height")?,
+            fps: required(fps, "fps")?,
+            video_kbps: required(video_kbps, "video_kbps")?,
+            audio_kbps: required(audio_kbps, "audio_kbps")?,
+            history_seconds: required(history_seconds, "history_seconds")?,
+            replay_budget_mib: required(replay_budget_mib, "replay_budget_mib")?,
+        };
+        profile.validate()?;
+        Ok(Self {
+            profile,
+            monitor: required(monitor, "monitor")?,
+        })
+    }
+
+    pub fn default_path() -> Result<PathBuf, String> {
+        let local_app_data = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| "LOCALAPPDATA is not set".to_string())?;
+        Ok(PathBuf::from(local_app_data)
+            .join("Veyva")
+            .join("settings.conf"))
+    }
+}
+
+fn required(value: Option<u32>, key: &str) -> Result<u32, String> {
+    value.ok_or_else(|| format!("missing setting: {key}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saves_and_replaces_in_requested_directory() {
+        let dir = std::env::temp_dir().join(format!("veyva-settings-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.conf");
+        let mut settings = Settings::default();
+        settings.save(&path).unwrap();
+        settings.set("fps", "60").unwrap();
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap(), settings);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+    #[test]
+    fn settings_text_round_trips() {
+        let settings = Settings::default();
+        assert_eq!(Settings::from_text(&settings.to_text()).unwrap(), settings);
+    }
+
+    #[test]
+    fn rejects_corrupt_settings() {
+        let valid = Settings::default().to_text();
+        assert!(Settings::from_text(&valid.replace("version=1", "version=2")).is_err());
+        assert!(Settings::from_text(&format!("{valid}width=1280\n")).is_err());
+        assert!(Settings::from_text(&format!("{valid}unknown=1\n")).is_err());
+        assert!(Settings::from_text(&valid.replace("height=720", "height=721")).is_err());
+        assert!(Settings::from_text("version=1\nwidth=1280\n").is_err());
+    }
+
+    #[test]
+    fn set_is_atomic_and_rejects_unimplemented_audio() {
+        let mut settings = Settings::default();
+        let original = settings;
+        assert!(settings.set("width", "321").is_err());
+        assert_eq!(settings, original);
+        assert!(settings.set("audio_kbps", "192").is_err());
+        assert_eq!(settings, original);
+        settings.set("monitor", "2").unwrap();
+        assert_eq!(settings.monitor, 2);
     }
 }

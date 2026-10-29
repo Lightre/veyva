@@ -49,3 +49,21 @@ Logs: `%LOCALAPPDATA%\Veyva\veyva.log`, rotated at startup after 1 MiB to `veyva
 - `docs/REFERENCE.md`: source review/provenance; `docs/VALIDATION.md`: observed checks.
 
 Selected GPU setup/conversion and encoder negotiation were adapted from the supplied ClipFlow revision. Required MIT notices are retained in source and `docs/CLIPFLOW-LICENSE.txt`. Its application UI, branding and updater configuration were not copied. Original Veyva code has no distribution license selected yet.
+
+## Customizable settings
+
+`veyva settings show` displays the saved profile, settings path, and nominal future replay payload estimate. `veyva settings preset low`, `balanced`, or `high` saves a starting profile. `veyva settings set KEY VALUE` saves a validated individual setting. Supported keys: `width`, `height`, `fps`, `video_kbps`, `history_seconds`, `replay_budget_mib`, and `monitor`.
+
+Settings are stored in `%LOCALAPPDATA%\Veyva\settings.conf` using a versioned UTF-8 key/value format. Missing files use Low End defaults. Invalid files produce an error and are left intact. Saves write/sync a temporary file beside the destination and replace the settings file only after success.
+
+```powershell
+.\target\release\veyva.exe settings preset balanced
+.\target\release\veyva.exe settings set fps 60
+.\target\release\veyva.exe settings set history_seconds 45
+.\target\release\veyva.exe settings show
+.\target\release\veyva.exe record --seconds 10 --output "$env:TEMP\veyva-custom-01.mp4" --width 1280 --height 720 --fps 30 --video-kbps 4000
+```
+
+Record overrides do not alter saved settings. Allowed profile values: even widths 320-7680, even heights 180-4320, FPS 1-240, video bitrate 250-100000 kbps, future replay duration 5-600 seconds, and encoded payload budget 16-512 MiB. These are configuration limits, not promises that every encoder can run every combination. Hardware negotiation can fail explicitly. The short-recording duration limit remains 60 seconds. The encoded sample-count safety cap now accommodates up to 60 seconds at 240 FPS.
+
+Replay duration is stored for the upcoming replay engine and currently does not enable replay capture. The memory budget already limits short-recording payload; a recording that exceeds it fails explicitly. Audio remains unimplemented. Profile changes take effect in the next CLI invocation. There is no GUI yet; this settings model is independent of it.

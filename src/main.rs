@@ -7,7 +7,8 @@ use std::path::PathBuf;
 struct Options {
     probe: bool,
     seconds: u32,
-    monitor: u32,
+    monitor: Option<u32>,
+    overrides: Vec<(String, String)>,
     output: Option<PathBuf>,
 }
 fn parse(args: &[String]) -> Result<Option<Options>, String> {
@@ -22,7 +23,8 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let mut options = Options {
         probe,
         seconds: 10,
-        monitor: 0,
+        monitor: None,
+        overrides: Vec::new(),
         output: None,
     };
     let mut seen = std::collections::HashSet::new();
@@ -35,7 +37,19 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
         }
         match pair[0].as_str() {
             "--monitor" => {
-                options.monitor = pair[1].parse().map_err(|_| "Invalid monitor index")?
+                options.monitor = Some(pair[1].parse().map_err(|_| "Invalid monitor index")?)
+            }
+            "--width" | "--height" | "--fps" | "--video-kbps" | "--buffer-seconds"
+            | "--buffer-mib"
+                if !probe =>
+            {
+                let key = match pair[0].as_str() {
+                    "--video-kbps" => "video_kbps",
+                    "--buffer-seconds" => "history_seconds",
+                    "--buffer-mib" => "replay_budget_mib",
+                    other => other.trim_start_matches("--"),
+                };
+                options.overrides.push((key.to_string(), pair[1].clone()));
             }
             "--seconds" if !probe => {
                 options.seconds = pair[1].parse().map_err(|_| "Invalid duration")?
@@ -68,16 +82,22 @@ fn main() -> std::process::ExitCode {
 }
 fn execute() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "settings") {
+        return settings_command(&args[1..]);
+    }
     let Some(options) = parse(&args)? else {
-        println!("Veyva - native Windows capture milestone\n\nUsage:\n  veyva probe [--monitor 0]\n  veyva record --output <file.mp4> [--seconds 10] [--monitor 0]\n\nSilent 720p/30 FPS H.264. Hardware encoder required. Recording never starts automatically.");
-        let profile = settings::CaptureProfile::low_end();
-        println!(
-            "Future replay profile: {} seconds; nominal A/V payload {:.1} MiB",
-            profile.history_seconds,
-            profile.payload_mib()
-        );
+        println!("Veyva - native Windows capture\n\nUsage:\n  veyva probe [--monitor 0]\n  veyva record --output <file.mp4> [--seconds 10] [--monitor 0]\n    [--width 1280] [--height 720] [--fps 30] [--video-kbps 3000]\n    [--buffer-seconds 30] [--buffer-mib 32]\n  veyva settings show\n  veyva settings set <key> <value>\n  veyva settings preset <low|balanced|high>\n\nRecord overrides apply only to that invocation. Silent hardware H.264; recording duration remains limited to 1-60 seconds. Replay history settings are stored for the upcoming replay engine; no replay ring is implemented yet.");
         return Ok(());
     };
+    let mut settings = settings::Settings::load(&settings::Settings::default_path()?)?;
+    // Overrides are validated before capture; persisted settings remain unchanged.
+    for (key, value) in &options.overrides {
+        settings.set(key, value)?;
+    }
+    if let Some(monitor) = options.monitor {
+        settings.monitor = monitor;
+    }
+    settings.profile.validate()?;
     if let Some(path) = &options.output {
         if path.exists() || path.with_extension("partial.mp4").exists() {
             return Err("Output or temporary file already exists".into());
@@ -98,7 +118,8 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
     ))?;
     let result = capture::run(
         options.seconds,
-        options.monitor,
+        settings.profile,
+        settings.monitor,
         options.output.as_deref(),
         options.probe,
         &mut log,
@@ -107,6 +128,39 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
         let _ = log.write(&format!("ERROR: {e}"));
     }
     result?;
+    Ok(())
+}
+
+fn settings_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = settings::Settings::default_path()?;
+    let mut current = settings::Settings::load(&path)?;
+    match args {
+        [command] if command == "show" => {}
+        [command, key, value] if command == "set" => {
+            current.set(key, value)?;
+            current.save(&path)?;
+        }
+        [command, preset] if command == "preset" => {
+            current.profile = match preset.as_str() {
+                "low" => settings::CaptureProfile::low_end(),
+                "balanced" => settings::CaptureProfile::balanced(),
+                "high" => settings::CaptureProfile::high(),
+                _ => return Err("Unknown preset: use low, balanced or high".into()),
+            };
+            current.save(&path)?;
+        }
+        _ => return Err(
+            "Use settings show, settings set <key> <value>, or settings preset <low|balanced|high>"
+                .into(),
+        ),
+    }
+    println!("Settings file: {}\n{}", path.display(), current.to_text());
+    let estimate = current.profile.payload_mib();
+    println!("Nominal future replay A/V payload: {estimate:.1} MiB; budget: {} MiB. Excludes overhead and bitrate bursts.", current.profile.replay_budget_mib);
+    if estimate > f64::from(current.profile.replay_budget_mib) {
+        println!("Warning: nominal payload exceeds the memory budget; the future replay engine may retain less history.");
+    }
+    println!("Replay duration is stored only. Audio is not implemented. Actual encoder support must be negotiated on the target hardware.");
     Ok(())
 }
 

@@ -51,3 +51,7 @@ On 2026-10-29, the measurement tool ran a 5-second pre-capture baseline and a 30
 - FFprobe read 893 H.264 frames at 1280x720 and reported exactly 30.000 seconds. MP4 size: 11,172,425 bytes; logged export time: 65 ms.
 
 Raw CSV/JSON, process log and private footage are in ignored `work/measurement-20261029T005702Z/`. The observed desktop workload was not scripted. No game FPS, GPU utilization, driver CPU attribution or long-session memory stability was measured. This run does not establish the cause of earlier intermittent stalls or prove low overhead in games.
+
+## Persistent settings foundation
+
+Added a validated, versioned settings model shared by the CLI and native capture backend. Unit tests cover strict parsing, profile validation, atomic in-memory updates, and save/load/replacement in a temporary directory. Eleven tests passed during integration. No live recording with custom profiles has been performed; supported ranges are configuration bounds and require encoder negotiation. Replay history configuration is persisted but replay capture is not implemented yet.

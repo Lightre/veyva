@@ -833,7 +833,7 @@ impl Packets {
     fn push(&mut self, sample: IMFSample, fps: u32) -> RResult<()> {
         unsafe {
             let size = u64::from(sample.GetTotalLength().map_err(hr)?);
-            if self.bytes + size > self.limit || self.samples.len() >= 3600 {
+            if self.bytes + size > self.limit || self.samples.len() >= 14_400 {
                 return Err(RecorderError::Other(
                     "Short-recording payload budget exceeded".into(),
                 ));
@@ -1064,18 +1064,19 @@ fn mux(path: &Path, header: &VideoFormatHeader, packets: &Packets) -> RResult<()
 
 pub fn run(
     seconds: u32,
+    profile: CaptureProfile,
     monitor: u32,
     output: Option<&Path>,
     probe: bool,
     log: &mut Logger,
 ) -> RResult<()> {
+    profile.validate().map_err(RecorderError::Other)?;
     let _session = MfSession::new()?;
     let gfx = GraphicsStack::create(monitor)?;
     log.write(&format!(
         "Adapter: {}; VRAM: {} MiB; display: {} ({}x{})",
         gfx.adapter_name, gfx.vram_mb, monitor, gfx.src_width, gfx.src_height
     ))?;
-    let profile = CaptureProfile::low_end();
     let mut encoder = HardwareEncoder::create(
         &gfx.device,
         profile.width,
