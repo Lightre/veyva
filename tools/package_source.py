@@ -32,7 +32,9 @@ def write_archive(directory, archive):
     sums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(directory).as_posix()}\n" for path in files)
     manifest = directory / "SOURCE-SHA256SUMS"
     manifest.write_text(sums, encoding="utf-8", newline="\n")
-    with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as bundle:
+    # Registry sources may carry timestamps outside ZIP's 1980-2107 range.
+    # Clamp archive metadata without changing vendored file contents or checksums.
+    with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as bundle:
         for path in [*files, manifest]:
             bundle.write(path, f"{directory.name}/{path.relative_to(directory).as_posix()}")
 

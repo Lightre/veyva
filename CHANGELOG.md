@@ -5,6 +5,14 @@ from Unreleased into a versioned section before pushing the matching `v` tag.
 
 ## [Unreleased]
 
+## [0.1.0-rc.2] - 2026-10-30
+
+Packaging correction for the first release candidate; no capture behavior changes.
+The rc.1 source packaging workflow failed before creating a draft release.
+
+### Fixed
+- Clamp out-of-range dependency timestamps to ZIP's supported range while preserving source contents and checksums.
+
 ## [0.1.0-rc.1] - 2026-10-30
 
 First release candidate for Windows x64. Hardware compatibility and package
