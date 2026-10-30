@@ -1,4 +1,5 @@
 import hashlib
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -49,6 +50,24 @@ class SourcePackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "refusing to overwrite"):
                 package_source.write_archive(directory, archive)
             self.assertEqual(archive.read_bytes(), previous)
+
+    def test_pre_1980_dependency_timestamp_is_clamped_without_changing_contents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "source"
+            dependency = directory / "vendor/crate/LICENSE"
+            dependency.parent.mkdir(parents=True)
+            content = b"upstream license notice"
+            dependency.write_bytes(content)
+            os.utime(dependency, (0, 0))
+            archive = Path(temporary) / "source.zip"
+            package_source.write_archive(directory, archive)
+            self.assertEqual(dependency.read_bytes(), content)
+            with zipfile.ZipFile(archive) as bundle:
+                info = bundle.getinfo("source/vendor/crate/LICENSE")
+                self.assertEqual(info.date_time, (1980, 1, 1, 0, 0, 0))
+                self.assertEqual(bundle.read(info), content)
+                sums = bundle.read("source/SOURCE-SHA256SUMS").decode()
+                self.assertIn(hashlib.sha256(content).hexdigest(), sums)
 
     def test_dirty_checkout_is_rejected_before_vendoring(self):
         with mock.patch.object(package_source, "validate_project", return_value=("0.1.0", "notes")), mock.patch.object(package_source.subprocess, "check_output", return_value=b" M Cargo.toml"), self.assertRaisesRegex(ValueError, "clean working tree"):
