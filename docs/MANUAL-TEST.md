@@ -91,3 +91,10 @@ On Windows build 20348 or newer, optionally select `All outputs / exclude Veyva`
 ## Audio source controls
 
 In Capture, each source toggle must appear immediately above its device selector and meter. Disable system audio or microphone capture: only that source's selector and meter become inactive, and its saved device selection remains intact. Re-enable it and verify the selection is restored. Preferences must expose both source toggles and show the same values as Capture, including after restart. Check existing automatic-save/deferred-recording behavior; disabling system capture must not mute Windows output or the optional replay notification sound.
+
+
+## Persistent output folder
+
+With no saved folder, confirm the destination defaults to Videos/Veyva. Pick a different absolute folder, quit completely and reopen: the selection must be retained. Repeat by typing a path and leaving the field, including a path containing spaces and non-ASCII characters. Relative or blank edits must not replace the last valid saved folder. Close immediately after an edit and verify the same behavior. Selecting a folder must not restart capture or change the path of an in-progress recording/export.
+
+Use a removable or otherwise unavailable destination: reopening must retain that path, and a recording/replay save must report the access/create failure rather than switching to the default. Do not make personal folders inaccessible for this test. Creating a missing writable folder on save remains supported.
