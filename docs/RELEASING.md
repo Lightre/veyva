@@ -12,7 +12,7 @@ MSI packaging can be added when managed installation, uninstall registration or 
 
 1. Finish acceptance testing and merge the version preparation PR into `main` with passing Windows CI.
 2. Update `Cargo.toml` and the root package version in `Cargo.lock` together. Use the same SemVer version for both and the changelog heading. Do not retag an existing release.
-3. Move release entries from Unreleased into a dated section such as `## [0.1.0] - YYYY-MM-DD`. Leave Unreleased for later changes. The initial changelog intentionally has no published version section.
+3. Move release entries from Unreleased into a dated section such as `## [0.1.0] - YYYY-MM-DD`. Leave Unreleased for later changes.
 4. After merge, create an annotated `vMAJOR.MINOR.PATCH` tag on that commit and push that specific tag. Optional prerelease suffixes such as `v0.1.0-rc.1` are supported; set the Cargo version and changelog to `0.1.0-rc.1` as well.
 
 Example commands, only after the corresponding version is prepared:
