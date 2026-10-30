@@ -19,6 +19,12 @@
 
 No account, telemetry or cloud upload is included.
 
+## Replay success sound
+
+An optional sound confirms a replay only after its MP4 is saved. Select **All outputs / exclude Veyva** under Audio and enable **Replay saved sound**. This mode requires Windows build 20348 or newer and captures application audio across output devices while excluding Veyva and its child processes. The sound defaults off and is suppressed when microphone capture is enabled, preventing acoustic pickup through speakers. Endpoint-specific capture remains available without the notification sound; unsupported self-excluding capture reports an error instead of falling back.
+
+Output checks require free space for replay payload, MP4 overhead and a 64 MiB safety reserve. Normal recording checks space periodically on its disk worker and attempts to finalize early when space is low. Checks cannot reserve space against other applications or guarantee recovery from a full or disconnected drive.
+
 ## Build and run
 
 Requires Windows, Rust with the MSVC toolchain, Visual Studio C++ build tools and the Windows SDK. Capture needs D3D11 and a compatible hardware H.264 encoder. Unsupported configurations fail explicitly; the application does not silently switch to software encoding.

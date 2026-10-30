@@ -280,6 +280,19 @@ impl App {
                     &self.audio_devices,
                 );
                 audio_level_meter(ui, levels[0], self.applied.audio_enabled, palette);
+                let sound_allowed = self
+                    .audio_preferences
+                    .sound_available(self.settings.audio_enabled);
+                ui.add_enabled_ui(sound_allowed, |ui| {
+                    setting_checkbox(
+                        ui,
+                        &mut self.audio_preferences.replay_sound,
+                        "Replay saved sound",
+                    );
+                });
+                if !sound_allowed {
+                    ui.small("Sound requires all outputs excluding Veyva, with microphone off.");
+                }
                 setting_checkbox(
                     ui,
                     &mut self.audio_preferences.microphone_enabled,
@@ -1967,6 +1980,9 @@ fn audio_device_choice(
     let text = selected
         .as_ref()
         .map(|id| {
+            if !input && id == crate::audio_preferences::EXCLUDE_SELF {
+                return "All outputs · exclude Veyva";
+            }
             devices
                 .iter()
                 .find(|device| &device.id == id)
@@ -1979,6 +1995,13 @@ fn audio_device_choice(
         .selected_text(text)
         .show_ui(ui, |ui| {
             ui.selectable_value(selected, None, "Windows default");
+            if !input {
+                ui.selectable_value(
+                    selected,
+                    Some(crate::audio_preferences::EXCLUDE_SELF.into()),
+                    "All outputs · exclude Veyva",
+                );
+            }
             for device in devices.iter().filter(|device| device.is_input == input) {
                 ui.selectable_value(selected, Some(device.id.clone()), &device.name);
             }

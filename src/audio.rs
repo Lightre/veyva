@@ -145,6 +145,8 @@ unsafe fn run(
         return Err(format!("Initialize audio Media Foundation: {e}"));
     }
     let _runtime = Runtime;
+    let exclusion_requested = system_enabled
+        && preferences.output_device.as_deref() == Some(crate::audio_preferences::EXCLUDE_SELF);
     let result = capture(
         origin,
         system_enabled,
@@ -154,7 +156,10 @@ unsafe fn run(
         ready,
         levels,
     );
-    result.map_err(|e| format!("Audio capture: {e}"))
+    result.map_err(|e| {
+        let detail = if exclusion_requested { " Self-excluding capture requires Windows build 20348 or newer; no fallback was enabled." } else { "" };
+        format!("Audio capture operation failed (0x{:08X}).{detail}", e.code().0 as u32)
+    })
 }
 
 #[derive(Default)]
@@ -211,16 +216,21 @@ impl Source {
         is_input: bool,
         first_frame: i64,
     ) -> windows::core::Result<Self> {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let device = match id {
-            Some(id) => enumerator.GetDevice(windows::core::PCWSTR(
-                windows::core::HSTRING::from(id).as_ptr(),
-            ))?,
-            None => enumerator
-                .GetDefaultAudioEndpoint(if is_input { eCapture } else { eRender }, eConsole)?,
+        let process_loopback = !is_input && id == Some(crate::audio_preferences::EXCLUDE_SELF);
+        let client: IAudioClient = if process_loopback {
+            crate::process_audio::activate()?
+        } else {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let device = match id {
+                Some(id) => enumerator.GetDevice(windows::core::PCWSTR(
+                    windows::core::HSTRING::from(id).as_ptr(),
+                ))?,
+                None => enumerator
+                    .GetDefaultAudioEndpoint(if is_input { eCapture } else { eRender }, eConsole)?,
+            };
+            device.Activate(CLSCTX_ALL, None)?
         };
-        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
         // Explicit conversion avoids interpreting arbitrary endpoint channel layouts
         // or treating a 44.1 kHz mix as 48 kHz. Unsupported conversion fails startup.
         let format = WAVEFORMATEX {
@@ -238,8 +248,11 @@ impl Source {
                 0
             } else {
                 AUDCLNT_STREAMFLAGS_LOOPBACK
-            }) | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            }) | if process_loopback {
+                0
+            } else {
+                AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+            },
             1_000_000, // 100 ms capacity tolerates brief scheduling stalls; poll remains 5 ms.
             0,
             &format,
@@ -406,7 +419,24 @@ unsafe fn capture(
     let mut frames_written = first_frame;
     let mut previous_poll = Instant::now();
     let mut envelope = [0.0_f32; 2];
+    struct SoundGuard;
+    impl Drop for SoundGuard {
+        fn drop(&mut self) {
+            crate::notification_sound::stop();
+        }
+    }
+    let _sound_guard = SoundGuard;
+    let allow_sound = preferences.replay_sound && preferences.sound_available(system_enabled);
+    crate::notification_sound::poll(false);
+    if preferences.output_device.as_deref() == Some(crate::audio_preferences::EXCLUDE_SELF)
+        && system_enabled
+    {
+        if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+            let _ = log.write("System audio: all outputs, excluding Veyva process tree; replay sound is suppressed while microphone capture is enabled");
+        }
+    }
     while !stop.load(Ordering::Acquire) {
+        crate::notification_sound::poll(allow_sound);
         let now = Instant::now();
         let mut backlogged = false;
         for source in &mut sources {

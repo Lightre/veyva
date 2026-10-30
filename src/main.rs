@@ -11,11 +11,17 @@ mod background;
 mod capture;
 mod diagnostics;
 #[cfg(windows)]
+mod disk_space;
+#[cfg(windows)]
 mod gui;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(windows)]
+mod notification_sound;
+#[cfg(windows)]
 mod output;
+#[cfg(windows)]
+mod process_audio;
 mod session;
 mod settings;
 use std::path::PathBuf;
