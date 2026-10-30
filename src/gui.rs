@@ -1567,7 +1567,7 @@ impl eframe::App for App {
                     Page::Settings => self.settings(ui),
                     Page::About => {
                         ui.heading("Made for the moment.");
-                        ui.label(RichText::new("Veyva 0.1.0").color(palette.muted));
+                        ui.label(RichText::new(concat!("Veyva ", env!("CARGO_PKG_VERSION"))).color(palette.muted));
                         ui.add_space(20.0);
                         card(ui, |ui| {
                             ui.label(RichText::new("Recording and replay, together.").size(22.0).strong());
