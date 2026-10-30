@@ -6,14 +6,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const EXCLUDE_SELF: &str = "veyva:all-outputs-exclude-self";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AudioPreferences {
     pub output_device: Option<String>,
     pub input_device: Option<String>,
     pub microphone_enabled: bool,
+    pub replay_sound: bool,
 }
 
 impl AudioPreferences {
+    pub fn sound_available(&self, system_enabled: bool) -> bool {
+        system_enabled
+            && self.output_device.as_deref() == Some(EXCLUDE_SELF)
+            && !self.microphone_enabled
+    }
+
     pub fn default_path() -> Result<PathBuf, String> {
         Ok(crate::settings::Settings::default_path()?.with_file_name("audio.conf"))
     }
@@ -37,6 +46,11 @@ impl AudioPreferences {
                 "input_device" => {
                     result.input_device = (!value.is_empty()).then(|| value.to_owned())
                 }
+                "replay_sound" => {
+                    result.replay_sound = value
+                        .parse()
+                        .map_err(|_| "Invalid replay sound preference")?;
+                }
                 "microphone_enabled" => {
                     result.microphone_enabled =
                         value.parse().map_err(|_| "Invalid microphone preference")?
@@ -56,10 +70,11 @@ impl AudioPreferences {
             }
         }
         let content = format!(
-            "output_device={}\ninput_device={}\nmicrophone_enabled={}\n",
+            "output_device={}\ninput_device={}\nmicrophone_enabled={}\nreplay_sound={}\n",
             self.output_device.as_deref().unwrap_or(""),
             self.input_device.as_deref().unwrap_or(""),
-            self.microphone_enabled
+            self.microphone_enabled,
+            self.replay_sound
         );
         let parent = path
             .parent()
@@ -156,4 +171,40 @@ pub fn devices() -> Result<Vec<AudioDevice>, String> {
     })
     .join()
     .map_err(|_| "Audio device enumeration thread failed".to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sound_requires_self_exclusion_and_no_microphone() {
+        let mut preferences = AudioPreferences::default();
+        assert!(!preferences.sound_available(true));
+        preferences.output_device = Some(EXCLUDE_SELF.into());
+        assert!(preferences.sound_available(true));
+        assert!(!preferences.sound_available(false));
+        preferences.microphone_enabled = true;
+        assert!(!preferences.sound_available(true));
+    }
+    #[test]
+    fn replay_sound_round_trip_and_legacy_default() {
+        let path = std::env::temp_dir().join(format!(
+            "veyva-audio-preferences-{}-{}.conf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let preferences = AudioPreferences {
+            output_device: Some(EXCLUDE_SELF.into()),
+            replay_sound: true,
+            ..Default::default()
+        };
+        preferences.save(&path).unwrap();
+        assert_eq!(AudioPreferences::load(&path).unwrap(), preferences);
+        std::fs::write(&path, "microphone_enabled=false\n").unwrap();
+        assert!(!AudioPreferences::load(&path).unwrap().replay_sound);
+        std::fs::remove_file(path).unwrap();
+    }
 }

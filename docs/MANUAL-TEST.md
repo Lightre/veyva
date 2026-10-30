@@ -72,3 +72,17 @@ Play system audio and speak into the selected microphone during an active audio 
 With replay armed, minimize Veyva to the tray and enter/leave a fullscreen game. After a desktop duplication access loss, verify the log records `Desktop capture access lost` followed by `Desktop capture reconnected`, then save with the replay shortcut without toggling Armed. Repeat while recording; check playback, seeking and audio/video timing across the transition. The encoder and audio clock remain active; frames during the interruption are unavailable.
 
 Retries occur at 250 ms intervals for up to 15 seconds. If the display remains inaccessible, verify an English error with HRESULT is shown and Armed and audio indicators clear. Stop/exit must remain responsive during retries. Device removal/reset, adapter changes and unsupported display modes still require a manual restart; do not treat access-loss recovery as support for every GPU failure.
+
+
+## Output disk space
+
+Use a dedicated test volume or quota; do not fill the system drive. With less than 64 MiB available, verify replay export and normal recording fail before creating a partial file. Replay needs its retained encoded payload plus 10 percent, a per-packet index allowance and 64 MiB of reserve. Normal recording also requires two seconds of configured video bitrate above the reserve.
+
+While recording, reduce free space on the test volume. Checks run on the writer thread every second or 8 MiB of payload. If headroom becomes insufficient, verify an early, playable saved recording and an explanatory error, while replay capture continues. These checks do not reserve disk space or guarantee finalization if another application exhausts the volume between checks. Verify failures appear in the application log. No old clips are deleted automatically.
+
+
+## Replay success sound and self-excluding audio
+
+On Windows build 20348 or newer, select `All outputs / exclude Veyva`, keep microphone capture off, and enable `Replay saved sound`. Play other application audio, save two overlapping replays and make a simultaneous normal recording. Verify one success sound after each completed replay, other application audio in the clips, and no Veyva notification sound in any clip. Check all output devices: this mode captures application audio across outputs, not only the previously selected endpoint. The original endpoint selection modes remain available and do not permit notification playback.
+
+Enable the microphone: verify the success sound becomes unavailable and stays silent even if its preference remains saved. Disable system audio, change output mode, stop/restart capture and test failed exports: none may play a stale success sound. An unsupported process-loopback backend must report an error without falling back to endpoint audio. Verify settings persistence and visible/hidden window behavior. Compilation does not validate actual loopback exclusion or hardware compatibility.

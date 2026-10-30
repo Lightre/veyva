@@ -335,10 +335,19 @@ pub(super) fn continuous(
                             .name("veyva-export".into())
                             .spawn(move || {
                                 let result = export_snapshot(&path, &header, snapshot);
+                                if let Err(error) = &result {
+                                    if let Ok((mut log, _)) = Logger::open() {
+                                        let _ =
+                                            log.write(&format!("Replay export failed: {error}"));
+                                    }
+                                }
                                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                                 state.saving = false;
                                 match result {
-                                    Ok(()) => state.last_saved = Some(path),
+                                    Ok(()) => {
+                                        state.last_saved = Some(path);
+                                        crate::notification_sound::request();
+                                    }
                                     Err(error) => state.error = Some(error.to_string()),
                                 }
                             })
@@ -622,6 +631,15 @@ fn export_snapshot(
     let has_audio = snapshot
         .iter()
         .any(|p| matches!(p.track, Track::Audio) && p.time >= base);
+    let payload = snapshot
+        .iter()
+        .filter(|p| p.time >= base)
+        .fold(0u64, |sum, p| sum.saturating_add(p.data.len() as u64));
+    crate::disk_space::ensure(
+        path,
+        crate::disk_space::required_space(payload, snapshot.len() as u64),
+    )
+    .map_err(RecorderError::Other)?;
     let mut writer = AvWriter::new(path, header, has_audio)?;
     for packet in snapshot {
         if packet.time >= base {
@@ -702,6 +720,8 @@ struct AvWriter {
 }
 impl AvWriter {
     fn new(path: &Path, header: &VideoFormatHeader, with_audio: bool) -> RResult<Self> {
+        crate::disk_space::ensure(path, crate::disk_space::RESERVE)
+            .map_err(RecorderError::Other)?;
         unsafe {
             let file = PendingFile::new(path)?;
             let wide: Vec<u16> = file
@@ -918,13 +938,55 @@ impl RecordingPipe {
             state.finalizing = false;
             state.error = None;
         }
-        let worker=std::thread::Builder::new().name("veyva-recording".into()).spawn(move||{
-            let result=(||->RResult<()>{let _mf=MfSession::new()?;let mut writer=AvWriter::new(&path,&header,audio)?;
-                while let Ok(packet)=receiver.recv(){pending.fetch_sub(packet.data.len() as u64,Ordering::AcqRel);if failed.load(Ordering::Acquire){return Err(RecorderError::Other("Recording stopped: disk writer could not keep up; no complete file saved".into()));}writer.write(&packet,packet.time)?;}
-                if failed.load(Ordering::Acquire){return Err(RecorderError::Other("Recording queue overflow; no complete file saved".into()));}writer.finish()})();
-            let mut state=shared.lock().unwrap_or_else(|e|e.into_inner());state.recording=false;state.paused=false;state.finalizing=false;
-            match result{Ok(())=>state.last_saved=Some(path),Err(error)=>state.error=Some(error.to_string())}
-        }).map_err(|e|{let mut state=status.lock().unwrap_or_else(|e|e.into_inner());state.recording=false;RecorderError::Other(e.to_string())})?;
+        let worker = std::thread::Builder::new().name("veyva-recording".into()).spawn(move || {
+            let mut saved = false;
+            let result = (|| -> RResult<()> {
+                let _mf = MfSession::new()?;
+                // Two seconds of expected payload, plus the finalization reserve.
+                let headroom = crate::disk_space::RESERVE.saturating_add(u64::from(header.bitrate) / 4);
+                crate::disk_space::ensure(&path, headroom).map_err(RecorderError::Other)?;
+                let mut writer = AvWriter::new(&path, &header, audio)?;
+                let mut checked = Instant::now();
+                let mut bytes_since_check = 0u64;
+                while let Ok(packet) = receiver.recv() {
+                    pending.fetch_sub(packet.data.len() as u64, Ordering::AcqRel);
+                    if failed.load(Ordering::Acquire) {
+                        return Err(RecorderError::Other("Recording stopped: disk writer could not keep up; no complete file saved".into()));
+                    }
+                    if checked.elapsed() >= Duration::from_secs(1) || bytes_since_check >= 8 * 1024 * 1024 {
+                        if let Err(error) = crate::disk_space::ensure(&path, headroom) {
+                            writer.finish()?;
+                            saved = true;
+                            return Err(RecorderError::Other(format!("Recording stopped and saved: {error}")));
+                        }
+                        checked = Instant::now();
+                        bytes_since_check = 0;
+                    }
+                    writer.write(&packet, packet.time)?;
+                    bytes_since_check = bytes_since_check.saturating_add(packet.data.len() as u64);
+                }
+                if failed.load(Ordering::Acquire) {
+                    return Err(RecorderError::Other("Recording queue overflow; no complete file saved".into()));
+                }
+                writer.finish()?;
+                saved = true;
+                Ok(())
+            })();
+            if let Err(error) = &result {
+                if let Ok((mut log, _)) = Logger::open() {
+                    let _ = log.write(&format!("Recording failed or stopped early: {error}"));
+                }
+            }
+            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+            state.recording = false;
+            state.paused = false;
+            state.finalizing = false;
+            if saved { state.last_saved = Some(path); }
+            if let Err(error) = result { state.error = Some(error.to_string()); }
+        }).map_err(|e| {
+            status.lock().unwrap_or_else(|e| e.into_inner()).recording = false;
+            RecorderError::Other(e.to_string())
+        })?;
         Ok(Self {
             sender: Some(sender),
             worker: Some(worker),
