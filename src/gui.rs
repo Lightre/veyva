@@ -280,19 +280,6 @@ impl App {
                     &self.audio_devices,
                 );
                 audio_level_meter(ui, levels[0], self.applied.audio_enabled, palette);
-                let sound_allowed = self
-                    .audio_preferences
-                    .sound_available(self.settings.audio_enabled);
-                ui.add_enabled_ui(sound_allowed, |ui| {
-                    setting_checkbox(
-                        ui,
-                        &mut self.audio_preferences.replay_sound,
-                        "Replay saved sound",
-                    );
-                });
-                if !sound_allowed {
-                    ui.small("Sound requires all outputs excluding Veyva, with microphone off.");
-                }
                 setting_checkbox(
                     ui,
                     &mut self.audio_preferences.microphone_enabled,
@@ -1322,6 +1309,7 @@ impl App {
                 setting_checkbox(ui, &mut self.settings.capture_cursor,"Capture cursor");
                 setting_checkbox(ui, &mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
                 setting_checkbox(ui, &mut self.settings.audio_enabled,"Record system audio");
+                setting_checkbox(ui, &mut self.audio_preferences.replay_sound, "Replay saved sound");
 
             });
 

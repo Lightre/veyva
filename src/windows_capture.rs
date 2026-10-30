@@ -203,6 +203,9 @@ pub(super) fn continuous(
     let origin = Instant::now();
     let audio_preferences = crate::audio_preferences::AudioPreferences::default_path()
         .and_then(|path| crate::audio_preferences::AudioPreferences::load(&path));
+    let replay_sound = audio_preferences
+        .as_ref()
+        .is_ok_and(|preferences| preferences.replay_sound);
     let mut audio = if settings.audio_enabled
         || audio_preferences
             .as_ref()
@@ -341,14 +344,18 @@ pub(super) fn continuous(
                                             log.write(&format!("Replay export failed: {error}"));
                                     }
                                 }
+                                let saved = result.is_ok();
                                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                                 state.saving = false;
                                 match result {
                                     Ok(()) => {
                                         state.last_saved = Some(path);
-                                        crate::notification_sound::request();
                                     }
                                     Err(error) => state.error = Some(error.to_string()),
+                                }
+                                drop(state);
+                                if saved && replay_sound {
+                                    crate::notification_sound::play();
                                 }
                             })
                             .map_err(|e| RecorderError::Other(e.to_string()))?,
