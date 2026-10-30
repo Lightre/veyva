@@ -59,7 +59,7 @@ A second launch requests the existing window rather than starting another GUI ca
 
 ## Files and preferences
 
-Clips default to `%USERPROFILE%\Videos\Veyva`. The destination field supports manual editing, a native folder picker and opening the folder in Explorer. Destination selection currently lasts for the application session. Names use a lowercase `veyva-` prefix followed by local date/time, for example `veyva-2026-10-29_21-45-08-123-record.mp4` or `veyva-2026-10-29_21-45-08-123-replay.mp4`. A short numeric suffix is added only when a name is already occupied; existing clips are not overwritten.
+Clips default to `%USERPROFILE%\Videos\Veyva`. The destination field supports manual editing, a native folder picker and opening the folder in Explorer. The selected destination is remembered across launches. Without a saved selection, the default above is used. An inaccessible destination reports an error rather than redirecting output elsewhere. Names use a lowercase `veyva-` prefix followed by local date/time, for example `veyva-2026-10-29_21-45-08-123-record.mp4` or `veyva-2026-10-29_21-45-08-123-replay.mp4`. A short numeric suffix is added only when a name is already occupied; existing clips are not overwritten.
 
 Preferences and diagnostics live under `%LOCALAPPDATA%\Veyva`:
 

@@ -4,6 +4,8 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 use std::path::PathBuf;
 use std::time::Duration;
 
+const OUTPUT_FOLDER_KEY: &str = "output_folder";
+
 const CORAL: Color32 = Color32::from_rgb(225, 86, 104);
 
 #[derive(Clone, Copy)]
@@ -148,6 +150,7 @@ struct App {
     error: Option<String>,
     notice: Option<String>,
     output: String,
+    output_candidate: String,
     session: Option<Session>,
     closing: bool,
     context: egui::Context,
@@ -180,7 +183,7 @@ impl App {
             ),
             egui::TextureOptions::LINEAR,
         );
-        let output = std::env::var_os("USERPROFILE")
+        let default_output = std::env::var_os("USERPROFILE")
             .map(PathBuf::from)
             .map(|p| {
                 p.join("Videos")
@@ -189,6 +192,10 @@ impl App {
                     .into_owned()
             })
             .unwrap_or_default();
+        let output = cc
+            .storage
+            .and_then(|storage| storage.get_string(OUTPUT_FOLDER_KEY))
+            .unwrap_or(default_output);
         let audio_result = crate::audio_preferences::AudioPreferences::default_path()
             .and_then(|path| crate::audio_preferences::AudioPreferences::load(&path));
         let (audio_preferences, audio_load_error) = match audio_result {
@@ -231,6 +238,7 @@ impl App {
             load_error,
             error: background_error.or(tray_error),
             notice: None,
+            output_candidate: output.clone(),
             output,
             session: None,
             closing: false,
@@ -773,6 +781,28 @@ impl App {
         }
     }
 
+    fn save_output_folder(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.output == self.output_candidate || (ctx.wants_keyboard_input() && !self.closing) {
+            return;
+        }
+        self.output_candidate = self.output.clone();
+        let folder = self.output.trim();
+        if !PathBuf::from(folder).is_absolute() {
+            self.error = Some(
+                "Choose an absolute output folder first; the previous saved folder was retained"
+                    .into(),
+            );
+            return;
+        }
+        if let Some(storage) = frame.storage_mut() {
+            storage.set_string(OUTPUT_FOLDER_KEY, folder.to_owned());
+            storage.flush();
+        } else {
+            self.error =
+                Some("Output folder could not be saved: desktop storage is unavailable".into());
+        }
+    }
+
     fn output_path(&self, kind: &str) -> Result<PathBuf, String> {
         let folder = PathBuf::from(self.output.trim());
         if !folder.is_absolute() {
@@ -1054,11 +1084,6 @@ impl App {
                     Some("The folder is created when a recording or replay is saved".into());
             }
         }
-        ui.label(
-            RichText::new("Folder choice applies to this session.")
-                .small()
-                .color(p.muted),
-        );
     }
 
     fn capture(&mut self, ui: &mut egui::Ui) {
@@ -1336,7 +1361,14 @@ impl eframe::App for App {
         false
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let folder = self.output.trim();
+        if PathBuf::from(folder).is_absolute() {
+            storage.set_string(OUTPUT_FOLDER_KEY, folder.to_owned());
+        }
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(receiver) = &self.device_scan {
             match receiver.try_recv() {
                 Ok(result) => {
@@ -1422,6 +1454,7 @@ impl eframe::App for App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        self.save_output_folder(ctx, frame);
         if self.pending_apply.is_some() && !self.active() && !self.closing {
             let replay_enabled = self.pending_apply.take().unwrap_or(false);
             let stop_error = self
