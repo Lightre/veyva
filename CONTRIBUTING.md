@@ -22,7 +22,7 @@ Capture/encode work must remain independent of the settings UI. Keep queues, his
 
 Do not commit recordings, runtime logs, local configuration, credentials or build output. Preserve third-party copyright/license notices and document the exact source revision for adapted code in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
 
-The repository has not yet assigned a public distribution license to original Veyva code. Review the licensing section of the README before reusing or distributing it.
+Contributions to original Veyva code, documentation, and assets are accepted under GNU GPL version 3 only (`GPL-3.0-only`), like the project. Preserve third-party terms and notices. See [LICENSE](LICENSE), [COPYRIGHT](COPYRIGHT), and [BRANDING.md](BRANDING.md).
 
 ## Assets
 

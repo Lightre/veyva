@@ -129,7 +129,7 @@ def package_release(tag):
         raise ValueError("Release archive already exists; refusing to overwrite")
     notices = dependency_notices(metadata)
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-        for source, name in [(binary, "veyva.exe"), (ROOT / "README.md", "README.md"), (ROOT / "THIRD_PARTY_NOTICES.txt", "THIRD_PARTY_NOTICES.txt")]:
+        for source, name in [(binary, "veyva.exe"), (ROOT / "README.md", "README.md"), (ROOT / "LICENSE", "LICENSE"), (ROOT / "COPYRIGHT", "COPYRIGHT"), (ROOT / "BRANDING.md", "BRANDING.md"), (ROOT / "THIRD_PARTY_NOTICES.txt", "THIRD_PARTY_NOTICES.txt")]:
             bundle.write(source, f"{folder}/{name}")
         bundle.writestr(f"{folder}/DEPENDENCY_LICENSES.txt", notices)
         bundle.writestr(f"{folder}/IMPORTS.txt", "\n".join(imports) + "\n")

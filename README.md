@@ -101,8 +101,10 @@ The interface uses eframe/egui 0.29.1; Windows bindings are pinned to 0.58.0. Th
 - [Contributing](CONTRIBUTING.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.txt)
 
-## Licensing
+## License
 
-A public distribution license has **not yet been selected for original Veyva code**. No open-source license grant for that code is implied by this repository.
+Copyright (C) 2026 Lightre. Veyva's original code, documentation, and visual and audio assets are licensed under **[GNU GPL version 3 only](LICENSE)** (`GPL-3.0-only`), without warranty. Contributions are accepted under the same license.
 
-Selected capture/conversion, encoder negotiation and AAC setup were adapted from MIT-licensed ClipFlow. Copyright, license text and the exact upstream revision are preserved in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) and source annotations. Dependency licenses must also be reviewed before distributing release binaries.
+Third-party components retain their own copyrights and licenses; see [third-party notices](THIRD_PARTY_NOTICES.txt). The [branding policy](BRANDING.md) explains use of the Veyva name and logo. Selected capture/conversion, encoder negotiation and AAC setup retain their MIT notices and exact upstream source revision.
+
+Release binaries are accompanied by a matching source archive containing the locked dependency sources and offline build instructions. Distributing modified versions requires providing corresponding source as required by the license; private modifications do not have to be published.

@@ -6,6 +6,7 @@ from Unreleased into a versioned section before pushing the matching `v` tag.
 ## [Unreleased]
 
 ### Added
+- Matching release source archives with locked dependency sources and offline build instructions.
 - Hardware H.264 desktop recording and bounded instant replay with MP4 export.
 - System output and microphone selection with mixed AAC audio.
 - Configurable global shortcuts, optional background operation and login startup.
@@ -14,3 +15,4 @@ from Unreleased into a versioned section before pushing the matching `v` tag.
 ### Changed
 - Capture preferences save automatically after editing.
 - Alt+F4 exits while the custom titlebar close button follows close-to-tray.
+- Original code, documentation and assets are licensed under GPL-3.0-only, with third-party notices preserved.

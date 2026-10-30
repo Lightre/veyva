@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 description = "A lightweight Windows replay recorder"
+license = "GPL-3.0-only"
+repository = "https://github.com/Lightre/veyva"
 
 [profile.release]
 opt-level = 2

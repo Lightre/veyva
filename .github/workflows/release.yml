@@ -72,6 +72,9 @@ jobs:
           python tools/release.py package --tag $env:GITHUB_REF_NAME
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Package matching source and locked dependencies
+        run: python tools/package_source.py --tag $env:GITHUB_REF_NAME
+
       - name: Create draft with changelog and generated notes
         env:
           GH_TOKEN: ${{ github.token }}
