@@ -17,12 +17,6 @@ pub struct AudioPreferences {
 }
 
 impl AudioPreferences {
-    pub fn sound_available(&self, system_enabled: bool) -> bool {
-        system_enabled
-            && self.output_device.as_deref() == Some(EXCLUDE_SELF)
-            && !self.microphone_enabled
-    }
-
     pub fn default_path() -> Result<PathBuf, String> {
         Ok(crate::settings::Settings::default_path()?.with_file_name("audio.conf"))
     }
@@ -176,16 +170,6 @@ pub fn devices() -> Result<Vec<AudioDevice>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn sound_requires_self_exclusion_and_no_microphone() {
-        let mut preferences = AudioPreferences::default();
-        assert!(!preferences.sound_available(true));
-        preferences.output_device = Some(EXCLUDE_SELF.into());
-        assert!(preferences.sound_available(true));
-        assert!(!preferences.sound_available(false));
-        preferences.microphone_enabled = true;
-        assert!(!preferences.sound_available(true));
-    }
     #[test]
     fn replay_sound_round_trip_and_legacy_default() {
         let path = std::env::temp_dir().join(format!(

@@ -419,24 +419,14 @@ unsafe fn capture(
     let mut frames_written = first_frame;
     let mut previous_poll = Instant::now();
     let mut envelope = [0.0_f32; 2];
-    struct SoundGuard;
-    impl Drop for SoundGuard {
-        fn drop(&mut self) {
-            crate::notification_sound::stop();
-        }
-    }
-    let _sound_guard = SoundGuard;
-    let allow_sound = preferences.replay_sound && preferences.sound_available(system_enabled);
-    crate::notification_sound::poll(false);
     if preferences.output_device.as_deref() == Some(crate::audio_preferences::EXCLUDE_SELF)
         && system_enabled
     {
         if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
-            let _ = log.write("System audio: all outputs, excluding Veyva process tree; replay sound is suppressed while microphone capture is enabled");
+            let _ = log.write("System audio: all outputs, excluding Veyva process tree");
         }
     }
     while !stop.load(Ordering::Acquire) {
-        crate::notification_sound::poll(allow_sound);
         let now = Instant::now();
         let mut backlogged = false;
         for source in &mut sources {
