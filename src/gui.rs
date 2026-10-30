@@ -272,14 +272,22 @@ impl App {
         ui.add_enabled_ui(
             self.pending_apply.is_none() && !self.closing && self.audio_load_error.is_none(),
             |ui| {
-                audio_device_choice(
-                    ui,
-                    "System output",
-                    false,
-                    &mut self.audio_preferences.output_device,
-                    &self.audio_devices,
-                );
-                audio_level_meter(ui, levels[0], self.applied.audio_enabled, palette);
+                setting_checkbox(ui, &mut self.settings.audio_enabled, "Record system audio");
+                ui.add_enabled_ui(self.settings.audio_enabled, |ui| {
+                    audio_device_choice(
+                        ui,
+                        "System output",
+                        false,
+                        &mut self.audio_preferences.output_device,
+                        &self.audio_devices,
+                    );
+                    audio_level_meter(
+                        ui,
+                        levels[0],
+                        self.settings.audio_enabled && self.applied.audio_enabled,
+                        palette,
+                    );
+                });
                 setting_checkbox(
                     ui,
                     &mut self.audio_preferences.microphone_enabled,
@@ -296,7 +304,8 @@ impl App {
                     audio_level_meter(
                         ui,
                         levels[1],
-                        self.applied_audio.microphone_enabled,
+                        self.audio_preferences.microphone_enabled
+                            && self.applied_audio.microphone_enabled,
                         palette,
                     );
                 });
@@ -557,7 +566,6 @@ impl App {
                 );
                 field(ui, "Frame rate", &mut self.settings.profile.fps, 1..=240, 1);
             });
-        setting_checkbox(ui, &mut self.settings.audio_enabled, "Record system audio");
         setting_checkbox(ui, &mut self.settings.capture_cursor, "Capture cursor");
     }
 
@@ -1303,12 +1311,13 @@ impl App {
                 });
             });
             ui.add_space(8.0);
-            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. Audio devices and microphone capture are configured in the Capture inspector.").small().color(palette.muted));
+            ui.label(RichText::new("The history budget caps encoded payload, not total process memory. A smaller budget may retain fewer seconds. Audio devices are selected in the Capture inspector.").small().color(palette.muted));
             card(ui, |ui| {
                 ui.label(RichText::new("03 / AUDIO & BEHAVIOR").small().strong().color(palette.muted));
                 setting_checkbox(ui, &mut self.settings.capture_cursor,"Capture cursor");
                 setting_checkbox(ui, &mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
                 setting_checkbox(ui, &mut self.settings.audio_enabled,"Record system audio");
+                setting_checkbox(ui, &mut self.audio_preferences.microphone_enabled, "Record microphone");
                 setting_checkbox(ui, &mut self.audio_preferences.replay_sound, "Replay saved sound");
 
             });
