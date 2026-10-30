@@ -282,14 +282,6 @@ impl App {
                 audio_level_meter(ui, levels[0], self.applied.audio_enabled, palette);
                 setting_checkbox(
                     ui,
-                    &mut self.audio_preferences.replay_sound,
-                    "Replay saved sound",
-                );
-                if self.audio_preferences.replay_sound {
-                    ui.small("May be captured in subsequent clips or active recordings.");
-                }
-                setting_checkbox(
-                    ui,
                     &mut self.audio_preferences.microphone_enabled,
                     "Record microphone",
                 );
@@ -1317,6 +1309,7 @@ impl App {
                 setting_checkbox(ui, &mut self.settings.capture_cursor,"Capture cursor");
                 setting_checkbox(ui, &mut self.settings.replay_auto_start,"Arm replay when Veyva opens");
                 setting_checkbox(ui, &mut self.settings.audio_enabled,"Record system audio");
+                setting_checkbox(ui, &mut self.audio_preferences.replay_sound, "Replay saved sound");
 
             });
 

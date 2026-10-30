@@ -21,7 +21,7 @@ No account, telemetry or cloud upload is included.
 
 ## Replay success sound
 
-An optional **Replay saved sound** confirms a replay only after its MP4 is saved and defaults off. It works with any system output selection, with or without microphone capture, and with audio capture disabled. It cannot enter the replay that just finished saving, but may be captured in subsequent clips, an active normal recording, or through a microphone listening to speakers.
+An optional **Replay saved sound** in Preferences confirms a replay only after its MP4 is saved and defaults off. It works with any system output selection, with or without microphone capture, and with audio capture disabled. It cannot enter the replay that just finished saving, but may be captured in subsequent clips, an active normal recording, or through a microphone listening to speakers.
 
 The optional **All outputs / exclude Veyva** mode captures application audio across output devices while excluding Veyva and its child processes. It requires Windows build 20348 or newer; unsupported capture reports an error instead of falling back. This mode does not prevent a microphone from hearing notification playback through speakers. Keep endpoint-specific capture when you want to record a single output; disable the notification sound if it must not appear in later recordings.
 
