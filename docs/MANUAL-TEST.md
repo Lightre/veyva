@@ -86,3 +86,8 @@ While recording, reduce free space on the test volume. Checks run on the writer 
 Enable `Replay saved sound` in Preferences with Windows default or a specific output selected. Save a replay: the sound must play only after the file is published and must not appear in that finished clip. Save another replay and make a simultaneous normal recording; notification playback may appear in these later/active captures. Repeat with microphone capture enabled and with both capture audio sources disabled: notification playback must remain available. Failed exports must not play a success sound. Verify disabled-by-default behavior, preference persistence and visible/hidden window behavior.
 
 On Windows build 20348 or newer, optionally select `All outputs / exclude Veyva`. With microphone capture off, verify other application audio is captured across outputs but Veyva notification playback is excluded. A microphone can still hear speakers in this mode. Unsupported process-loopback capture must report an error without falling back to endpoint audio. Compilation does not validate native loopback exclusion or hardware compatibility.
+
+
+## Audio source controls
+
+In Capture, each source toggle must appear immediately above its device selector and meter. Disable system audio or microphone capture: only that source's selector and meter become inactive, and its saved device selection remains intact. Re-enable it and verify the selection is restored. Preferences must expose both source toggles and show the same values as Capture, including after restart. Check existing automatic-save/deferred-recording behavior; disabling system capture must not mute Windows output or the optional replay notification sound.
