@@ -28,7 +28,11 @@ git push origin v0.1.0
 
 The Portable release workflow verifies that the tag is contained in `main`, checks its version against Cargo.toml and the changelog, tests the packaging helpers, builds a locked static-runtime x64 executable and creates a ZIP plus SHA-256 checksum file.
 
-The ZIP contains the executable, README, upstream notices, a Cargo dependency license inventory with available crate-root license texts, and a normal-import DLL inventory. The dependency inventory is deliberately conservative and may include build-only or other-platform crates; it does not replace a distribution license review.
+The portable ZIP contains the executable, README, GPL license, copyright and branding notices, upstream notices, a Cargo dependency license inventory with available crate-root license texts, and a normal-import DLL inventory. The dependency inventory is deliberately conservative and may include build-only or other-platform crates; it does not replace a distribution license review.
+
+A separate `veyva-vVERSION-source.zip` contains the tracked project inputs, assets, build scripts, lockfile, full locked dependency sources in `vendor/`, an offline Cargo configuration, `SOURCE-README.txt` with build instructions and tool/revision details, and `SOURCE-SHA256SUMS`. Git metadata, ignored files and `AGENTS.md` are excluded. Both release archives are covered by `SHA256SUMS.txt`; GitHub's automatic source ZIP does not replace the bundled dependency source package.
+
+Source packaging requires a clean checkout, refuses to overwrite an existing archive, uses `cargo vendor --locked --versioned-dirs` and validates dependency resolution with `cargo metadata --frozen`. Vendoring can download dependency sources on the release runner. Locally, after binary packaging, use `python tools/package_source.py --tag vVERSION`. The package builds with `cargo build --release --frozen --target x86_64-pc-windows-msvc`; general-purpose tools and Windows system libraries are not bundled. Full source-archive building still needs verification before publication.
 
 Release notes start with the exact matching changelog section. GitHub-generated release notes are appended beneath it. Missing/empty/duplicate changelog sections or mismatched versions stop the workflow. Existing release assets are not silently overwritten; investigate a partial draft before rerunning.
 
@@ -36,7 +40,8 @@ The result is a **draft release**, not an automatically published release. A pre
 
 Before publishing:
 
-- Review the original-code distribution license, dependency license inventory and notices. Original Veyva code has not yet been assigned a public distribution license.
+- Original Veyva code and assets use GPL-3.0-only. Review the dependency license inventory and preserve third-party notices.
+- Provide equivalent access to the matching source ZIP alongside the binary ZIP. A private repository link alone does not provide source access to binary recipients. The draft must remain unpublished until both archives are available.
 - Download the ZIP, verify SHA256SUMS.txt and test on a clean Windows machine, including recording/audio, tray, shortcuts and startup.
 - Review changelog/generated notes, then publish the draft from GitHub Releases.
 
