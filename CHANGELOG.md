@@ -5,6 +5,9 @@ from Unreleased into a versioned section before pushing the matching `v` tag.
 
 ## [Unreleased]
 
+### Fixed
+- Add an optional, default-off preference to show the Capture window once when a new audio capture error occurs while hidden in the tray. Wake the hidden window when audio fails and log the error.
+
 ## [0.1.0] - 2026-10-30
 
 First stable release for Windows x64.

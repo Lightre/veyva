@@ -167,6 +167,7 @@ pub(super) fn continuous(
     commands: std::sync::mpsc::Receiver<crate::session::Command>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     status: std::sync::Arc<std::sync::Mutex<crate::session::Status>>,
+    wake: &dyn Fn(),
 ) -> RResult<()> {
     use crate::session::{Command, History, Packet, Track};
     use std::sync::atomic::Ordering;
@@ -216,7 +217,11 @@ pub(super) fn continuous(
         }) {
             Ok(audio) => Some(audio),
             Err(error) => {
+                if let Ok((mut log, _)) = Logger::open() {
+                    let _ = log.write(&format!("Audio capture unavailable: {error}"));
+                }
                 status.lock().unwrap_or_else(|e| e.into_inner()).audio_error = Some(error);
+                wake();
                 None
             }
         }
@@ -563,7 +568,11 @@ pub(super) fn continuous(
                 });
             }
             if let Some(error) = capture.error() {
+                if let Ok((mut log, _)) = Logger::open() {
+                    let _ = log.write(&format!("Audio capture unavailable: {error}"));
+                }
                 status.lock().unwrap_or_else(|e| e.into_inner()).audio_error = Some(error);
+                wake();
                 audio = None;
             }
         }

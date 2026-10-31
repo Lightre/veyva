@@ -97,7 +97,7 @@ impl Drop for Session {
         self.stop();
     }
 }
-pub fn start(settings: Settings) -> Result<Session, String> {
+pub fn start(settings: Settings, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Session, String> {
     settings.profile.validate()?;
     static ACTIVE: AtomicBool = AtomicBool::new(false);
     struct ActiveGuard;
@@ -128,7 +128,7 @@ pub fn start(settings: Settings) -> Result<Session, String> {
             let result = (|| -> crate::capture::RResult<()> {
                 let (mut log, _) = crate::diagnostics::Logger::open()?;
                 log.write(&format!("Capture session starting: monitor={}, {}x{} at {} FPS; H.264; audio_requested={}; capture_cursor={}; history_seconds={}; payload_budget_mib={}", settings.monitor, settings.profile.width, settings.profile.height, settings.profile.fps, settings.audio_enabled, settings.capture_cursor, settings.profile.history_seconds, settings.profile.replay_budget_mib))?;
-                let result = crate::capture::continuous(settings, receiver, stopping, shared.clone());
+                let result = crate::capture::continuous(settings, receiver, stopping, shared.clone(), wake.as_ref());
                 match &result {
                     Ok(()) => { log.write("Replay session stopped")?; }
                     Err(error) => { let _ = log.write(&format!("Replay session failed: {error}")); }
