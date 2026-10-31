@@ -127,6 +127,7 @@ struct App {
         std::sync::mpsc::Receiver<Result<Vec<crate::audio_preferences::AudioDevice>, String>>,
     >,
     audio_load_error: Option<String>,
+    observed_audio_error: Option<String>,
     background: crate::background::BackgroundPreferences,
     tray: Option<crate::background::Tray>,
     hidden: bool,
@@ -220,6 +221,7 @@ impl App {
             audio_devices: Vec::new(),
             device_scan: None,
             audio_load_error,
+            observed_audio_error: None,
             background,
             tray,
             hidden: false,
@@ -367,8 +369,14 @@ impl App {
                 "Start replay in the background when I sign in",
             )
             .changed();
-            ui.label(RichText::new("Both options are off by default. Use the Veyva tray menu to open the window, save a replay or quit completely. Background capture uses your selected quality and history budget.").small().color(ui.visuals().weak_text_color()));
-            if close_changed || startup_changed {
+            let audio_error_changed = setting_checkbox(
+                ui,
+                &mut candidate.show_window_on_audio_error,
+                "Show window when audio capture fails",
+            )
+            .changed();
+            ui.label(RichText::new("All options are off by default. Use the Veyva tray menu to open the window, save a replay or quit completely. Background capture uses your selected quality and history budget.").small().color(ui.visuals().weak_text_color()));
+            if close_changed || startup_changed || audio_error_changed {
                 if !self.tray.as_ref().is_some_and(|tray| tray.is_available()) {
                     self.error = Some("The notification icon is unavailable; background mode cannot be enabled safely.".into());
                 } else {
@@ -401,10 +409,18 @@ impl App {
 
     fn start(&mut self) {
         self.error = None;
-        let result = session::start(self.applied);
+        let ctx = self.context.clone();
+        let result = session::start(
+            self.applied,
+            std::sync::Arc::new(move || {
+                ctx.request_repaint();
+                crate::background::wake_desktop();
+            }),
+        );
         match result {
             Ok(s) => {
                 self.session = Some(s);
+                self.observed_audio_error = None;
                 self.notice = None;
             }
             Err(e) => self.error = Some(e),
@@ -1551,13 +1567,25 @@ impl eframe::App for App {
         if self.active() || self.closing || self.pending_apply.is_some() {
             ctx.request_repaint_after(Duration::from_millis(if self.hidden { 1000 } else { 250 }));
         }
-        if self.hidden
-            && self
-                .session
-                .as_ref()
-                .and_then(|session| session.status.lock().ok())
-                .is_some_and(|state| state.error.is_some())
+        let mut new_audio_error = false;
+        let mut session_error = false;
+        if let Some(state) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.status.lock().ok())
         {
+            new_audio_error =
+                state.audio_error.is_some() && state.audio_error != self.observed_audio_error;
+            self.observed_audio_error.clone_from(&state.audio_error);
+            session_error = state.error.is_some();
+        }
+        if self.hidden
+            && (session_error
+                || (new_audio_error && self.background.show_window_on_audio_error && !self.closing))
+        {
+            if new_audio_error {
+                self.page = Page::Capture;
+            }
             self.hidden = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }

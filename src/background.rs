@@ -20,6 +20,7 @@ use windows::{
 pub struct BackgroundPreferences {
     pub close_to_tray: bool,
     pub start_with_windows: bool,
+    pub show_window_on_audio_error: bool,
 }
 impl BackgroundPreferences {
     fn path() -> Result<PathBuf, String> {
@@ -41,6 +42,11 @@ impl BackgroundPreferences {
                     value.start_with_windows =
                         v.parse().map_err(|_| "Invalid start_with_windows")?
                 }
+                Some(("show_window_on_audio_error", v)) => {
+                    value.show_window_on_audio_error = v
+                        .parse()
+                        .map_err(|_| "Invalid show_window_on_audio_error")?
+                }
                 _ => return Err("Invalid background preference".into()),
             }
         }
@@ -54,8 +60,8 @@ impl BackgroundPreferences {
         std::fs::write(
             &temporary,
             format!(
-                "close_to_tray={}\nstart_with_windows={}\n",
-                self.close_to_tray, self.start_with_windows
+                "close_to_tray={}\nstart_with_windows={}\nshow_window_on_audio_error={}\n",
+                self.close_to_tray, self.start_with_windows, self.show_window_on_audio_error
             ),
         )
         .map_err(|e| e.to_string())?;

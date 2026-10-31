@@ -34,14 +34,15 @@ pub(crate) fn continuous(
     commands: std::sync::mpsc::Receiver<crate::session::Command>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     status: std::sync::Arc<std::sync::Mutex<crate::session::Status>>,
+    wake: &dyn Fn(),
 ) -> RResult<()> {
     #[cfg(windows)]
     {
-        windows_capture::continuous(settings, commands, stop, status)
+        windows_capture::continuous(settings, commands, stop, status, wake)
     }
     #[cfg(not(windows))]
     {
-        let _ = (settings, commands, stop, status);
+        let _ = (settings, commands, stop, status, wake);
         Err(RecorderError::Other(
             "Capture is supported on Windows only".into(),
         ))
