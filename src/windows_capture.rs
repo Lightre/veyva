@@ -207,12 +207,12 @@ pub(super) fn continuous(
     let replay_sound = audio_preferences
         .as_ref()
         .is_ok_and(|preferences| preferences.replay_sound);
-    let mut audio = if settings.audio_enabled
+    let audio_requested = settings.audio_enabled
         || audio_preferences
             .as_ref()
-            .is_ok_and(|p| p.microphone_enabled)
-    {
-        match audio_preferences.and_then(|preferences| {
+            .is_ok_and(|p| p.microphone_enabled);
+    let mut audio = if audio_requested {
+        match audio_preferences.clone().and_then(|preferences| {
             crate::audio::AudioCapture::start(origin, settings.audio_enabled, preferences)
         }) {
             Ok(audio) => Some(audio),
@@ -228,6 +228,9 @@ pub(super) fn continuous(
     } else {
         None
     };
+    let mut audio_retry: Option<
+        std::sync::mpsc::Receiver<Result<crate::audio::AudioCapture, String>>,
+    > = None;
     let mut replay_enabled = settings.replay_auto_start;
     struct ExportGuard(Option<std::thread::JoinHandle<()>>);
     impl Drop for ExportGuard {
@@ -259,6 +262,39 @@ pub(super) fn continuous(
         {
             recording = None;
         }
+        if let Some(receiver) = &audio_retry {
+            let result = match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Audio retry worker stopped unexpectedly".into()))
+                }
+            };
+            if let Some(result) = result {
+                audio_retry = None;
+                let message;
+                {
+                    let mut state = status.lock().unwrap_or_else(|e| e.into_inner());
+                    state.audio_retrying = false;
+                    match result {
+                        Ok(capture) => {
+                            audio = Some(capture);
+                            state.audio_error = None;
+                            state.audio_active = true;
+                            message = "Audio capture restarted".to_string();
+                        }
+                        Err(error) => {
+                            message = format!("Audio retry failed: {error}");
+                            state.audio_error = Some(error);
+                        }
+                    }
+                }
+                if let Ok((mut log, _)) = Logger::open() {
+                    let _ = log.write(&message);
+                }
+                wake();
+            }
+        }
         for _ in 0..4 {
             let command = match commands.try_recv() {
                 Ok(command) => command,
@@ -266,6 +302,40 @@ pub(super) fn continuous(
             };
             match command {
                 Command::Stop => stop.store(true, Ordering::Release),
+                Command::RetryAudio => {
+                    if audio.is_some() || audio_retry.is_some() || !audio_requested {
+                        continue;
+                    }
+                    let preferences = audio_preferences.clone();
+                    let system_enabled = settings.audio_enabled;
+                    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                    match std::thread::Builder::new()
+                        .name("veyva-audio-retry".into())
+                        .spawn(move || {
+                            let result = preferences.and_then(|preferences| {
+                                crate::audio::AudioCapture::start(
+                                    origin,
+                                    system_enabled,
+                                    preferences,
+                                )
+                            });
+                            // A closed receiver drops the result on this worker, not capture.
+                            let _ = sender.send(result);
+                        }) {
+                        Ok(_) => {
+                            audio_retry = Some(receiver);
+                            status
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .audio_retrying = true;
+                        }
+                        Err(error) => {
+                            status.lock().unwrap_or_else(|e| e.into_inner()).audio_error =
+                                Some(format!("Start audio retry worker: {error}"));
+                            wake();
+                        }
+                    }
+                }
                 Command::SetReplayEnabled(enabled) => {
                     replay_enabled = enabled;
                     history = History::new(budget, profile.history_seconds);
@@ -280,7 +350,7 @@ pub(super) fn continuous(
                     match RecordingPipe::start(
                         path,
                         encoder.header.clone(),
-                        audio.is_some(),
+                        audio_requested,
                         status.clone(),
                         budget,
                     ) {

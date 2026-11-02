@@ -329,7 +329,9 @@ impl App {
     fn refresh_audio_devices(&mut self, ui: &mut egui::Ui, palette: Palette) {
         let scanning = self.device_scan.is_some();
         let response = ui
-            .add_enabled_ui(!scanning, |ui| refresh_icon(ui, palette))
+            .add_enabled_ui(!scanning, |ui| {
+                refresh_icon(ui, palette, "Refresh audio devices")
+            })
             .inner;
         if response
             .on_hover_text(if scanning {
@@ -440,7 +442,7 @@ impl App {
             Command::FinishRecording => Some((0, false)),
             Command::SetReplayEnabled(value) => Some((2, *value)),
             Command::SaveReplay(_) => Some((3, true)),
-            Command::Stop => None,
+            Command::Stop | Command::RetryAudio => None,
         };
         if let Some(s) = &self.session {
             self.pending_error = s.status.lock().ok().and_then(|s| s.error.clone());
@@ -1301,11 +1303,37 @@ impl App {
             );
         }
         if let Some(error) = state.audio_error {
-            banner(
-                ui,
-                &format!("Audio capture unavailable: {error}. Files may contain video only."),
-                CORAL,
-            );
+            let retry_enabled = active
+                && !self.closing
+                && !stopping
+                && !state.audio_retrying
+                && self.pending_apply.is_none()
+                && self.pending_command.is_none();
+            let retry = egui::Frame::none()
+                .fill(CORAL.gamma_multiply(0.08))
+                .rounding(8.0)
+                .inner_margin(egui::Margin::symmetric(12.0, 6.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let text_width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(0.0);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(text_width, 0.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(egui::Label::new(RichText::new(format!(
+                                    "Audio capture unavailable: {error}. Files may contain video only."
+                                )).color(CORAL)).wrap());
+                            },
+                        );
+                        ui.add_enabled_ui(retry_enabled, |ui| refresh_icon(ui, p, "Retry audio"))
+                            .inner
+                            .on_hover_text(if state.audio_retrying { "Retrying audio..." } else { "Retry audio" })
+                            .clicked()
+                    }).inner
+                }).inner;
+            if retry {
+                self.send(Command::RetryAudio);
+            }
         }
         if let Some(error) = state.error {
             banner(ui, &error, CORAL);
@@ -2066,14 +2094,10 @@ fn audio_device_choice(
         });
 }
 
-fn refresh_icon(ui: &mut egui::Ui, palette: Palette) -> egui::Response {
+fn refresh_icon(ui: &mut egui::Ui, palette: Palette, label: &str) -> egui::Response {
     let response = ui.add_sized([28.0, 28.0], egui::Button::new("").frame(false));
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            ui.is_enabled(),
-            "Refresh audio devices",
-        )
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     if response.hovered() || response.has_focus() {
         ui.painter()
