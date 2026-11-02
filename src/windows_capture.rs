@@ -79,13 +79,26 @@ impl Drop for FrameTimer {
 }
 
 fn hr(e: windows::core::Error) -> RecorderError {
+    if e.code() == DXGI_ERROR_ACCESS_LOST {
+        return RecorderError::DesktopAccessLost;
+    }
     let description = match e.code() {
-        DXGI_ERROR_ACCESS_LOST => "Desktop capture access was lost",
         DXGI_ERROR_DEVICE_REMOVED => "The graphics device was removed",
         DXGI_ERROR_DEVICE_RESET => "The graphics device was reset",
         _ => "Windows capture operation failed",
     };
     RecorderError::Other(format!("{description} (0x{:08X})", e.code().0 as u32))
+}
+
+// ReleaseFrame is evaluated by the caller even when conversion fails.
+// Access loss from cursor shape retrieval or release needs the same recovery
+// as AcquireNextFrame, and no converted pixels may be submitted in that case.
+fn desktop_frame_ready(converted: RResult<()>, released: RResult<()>) -> RResult<bool> {
+    match converted.and(released) {
+        Ok(()) => Ok(true),
+        Err(RecorderError::DesktopAccessLost) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +117,23 @@ mod frame_timer_tests {
         assert_eq!(
             super::hr(error).to_string(),
             "Windows capture operation failed (0x80004005)"
+        );
+    }
+
+    #[test]
+    fn conversion_and_release_access_loss_discard_the_frame() {
+        use super::{desktop_frame_ready, RecorderError};
+        assert!(!desktop_frame_ready(Err(RecorderError::DesktopAccessLost), Ok(())).unwrap());
+        assert!(!desktop_frame_ready(Ok(()), Err(RecorderError::DesktopAccessLost)).unwrap());
+        assert!(desktop_frame_ready(Ok(()), Ok(())).unwrap());
+        assert!(desktop_frame_ready(
+            Err(RecorderError::Other("conversion failed".into())),
+            Ok(())
+        )
+        .is_err());
+        assert!(
+            desktop_frame_ready(Ok(()), Err(RecorderError::Other("release failed".into())))
+                .is_err()
         );
     }
 
@@ -569,6 +599,7 @@ pub(super) fn continuous(
                 .duplication
                 .as_ref()
                 .map(|duplication| duplication.AcquireNextFrame(0, &mut info, &mut resource));
+            let mut access_lost_at = None;
             match acquired {
                 None => {}
                 Some(Ok(())) => {
@@ -580,22 +611,27 @@ pub(super) fn continuous(
                         cursor.convert(&gfx, &converter, &texture, &info)
                     })();
                     let released = gfx.duplication.as_ref().unwrap().ReleaseFrame().map_err(hr);
-                    converted?;
-                    released?;
-                    have_frame = true;
+                    if desktop_frame_ready(converted, released)? {
+                        have_frame = true;
+                    } else {
+                        access_lost_at = Some("frame conversion or ReleaseFrame");
+                    }
                 }
                 Some(Err(error)) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
                 Some(Err(error)) if error.code() == DXGI_ERROR_ACCESS_LOST => {
-                    // Release the invalid interface before attempting DuplicateOutput again.
-                    gfx.duplication = None;
-                    have_frame = false;
-                    recovery_started = Some(Instant::now());
-                    next_recovery = Instant::now() + Duration::from_millis(250);
-                    if let Ok((mut log, _)) = Logger::open() {
-                        let _ = log.write("Desktop capture access lost (DXGI_ERROR_ACCESS_LOST, 0x887A0026); reconnecting for up to 15 seconds");
-                    }
+                    access_lost_at = Some("AcquireNextFrame");
                 }
                 Some(Err(error)) => return Err(hr(error)),
+            }
+            if let Some(operation) = access_lost_at {
+                // Release the invalid interface before attempting DuplicateOutput again.
+                gfx.duplication = None;
+                have_frame = false;
+                recovery_started = Some(Instant::now());
+                next_recovery = Instant::now() + Duration::from_millis(250);
+                if let Ok((mut log, _)) = Logger::open() {
+                    let _ = log.write(&format!("Desktop capture access lost during {operation} (DXGI_ERROR_ACCESS_LOST, 0x887A0026); reconnecting for up to 15 seconds"));
+                }
             }
             if have_frame {
                 match pool.AllocateSample() {

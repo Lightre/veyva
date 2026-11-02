@@ -4,6 +4,7 @@ use std::{fmt, path::Path};
 #[derive(Debug)]
 pub enum RecorderError {
     Other(String),
+    DesktopAccessLost,
     NoEncoder,
     NoSuchMonitor(u32),
 }
@@ -11,6 +12,7 @@ impl fmt::Display for RecorderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Other(message) => f.write_str(message),
+            Self::DesktopAccessLost => f.write_str("Desktop capture access was lost (0x887A0026)"),
             Self::NoEncoder => f.write_str(
                 "No compatible hardware H.264 encoder found; software encoding is disabled",
             ),
