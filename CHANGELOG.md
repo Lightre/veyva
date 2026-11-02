@@ -5,6 +5,9 @@ from Unreleased into a versioned section before pushing the matching `v` tag.
 
 ## [Unreleased]
 
+### Added
+- Retry failed audio capture from Capture without restarting video capture or clearing replay history. Reuse the session clock and saved audio devices.
+
 ### Fixed
 - Add an optional, default-off preference to show the Capture window once when a new audio capture error occurs while hidden in the tray. Wake the hidden window when audio fails and log the error.
 

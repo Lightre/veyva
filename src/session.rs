@@ -17,6 +17,7 @@ pub enum Command {
     FinishRecording,
     SetReplayEnabled(bool),
     SaveReplay(PathBuf),
+    RetryAudio,
     Stop,
 }
 #[derive(Clone)]
@@ -27,6 +28,7 @@ pub struct Status {
     pub finalizing: bool,
     pub replay_enabled: bool,
     pub audio_active: bool,
+    pub audio_retrying: bool,
     pub audio_levels: [f32; 2],
     pub audio_error: Option<String>,
     pub phase: String,
@@ -47,6 +49,7 @@ impl Default for Status {
             finalizing: false,
             replay_enabled: false,
             audio_active: false,
+            audio_retrying: false,
             audio_levels: [0.0; 2],
             audio_error: None,
             phase: "Idle".into(),
@@ -139,6 +142,7 @@ pub fn start(settings: Settings, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Se
             status.phase = if result.is_ok() { "Stopped" } else { "Failed" }.into();
             status.replay_enabled = false;
             status.audio_active = false;
+            status.audio_retrying = false;
             status.audio_levels = [0.0; 2];
             status.buffered_seconds = 0.0;
             status.buffer_bytes = 0;
@@ -295,6 +299,32 @@ mod tests {
         let mut audio = packet(21, true);
         audio.track = Track::Audio;
         assert_eq!(clock.map(&audio), Some(10_000_000));
+    }
+    #[test]
+    fn restarted_audio_keeps_recording_and_replay_time_after_a_gap() {
+        let mut clock = RecordingClock::default();
+        let mut history = History::new(1024, 30);
+        for second in 10..=20 {
+            let video = packet(second, true);
+            assert_eq!(clock.map(&video), Some((second - 10) * 10_000_000));
+            history.push(video);
+            // Audio can be absent at recording start and return much later.
+            if second >= 18 {
+                let mut audio = packet(second, true);
+                audio.track = Track::Audio;
+                assert_eq!(clock.map(&audio), Some((second - 10) * 10_000_000));
+                history.push(audio);
+            }
+        }
+        let snapshot = history.snapshot();
+        assert_eq!(snapshot.first().unwrap().time, 100_000_000);
+        assert_eq!(history.seconds(), 11.0);
+        let audio_times: Vec<_> = snapshot
+            .iter()
+            .filter(|p| p.track == Track::Audio)
+            .map(|p| p.time)
+            .collect();
+        assert_eq!(audio_times, vec![180_000_000, 190_000_000, 200_000_000]);
     }
     #[test]
     fn audio_respects_history_budget_and_snapshot_start() {
