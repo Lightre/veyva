@@ -158,8 +158,20 @@ unsafe fn run(
     );
     result.map_err(|e| {
         let detail = if exclusion_requested { " Self-excluding capture requires Windows build 20348 or newer; no fallback was enabled." } else { "" };
-        format!("Audio capture operation failed (0x{:08X}).{detail}", e.code().0 as u32)
+        format!("{}.{detail}", audio_failure("Audio capture", &e))
     })
+}
+
+// Keep our actionable queue errors, without exposing localized Windows text.
+fn audio_failure(stage: &str, error: &windows::core::Error) -> String {
+    let message = error.message();
+    let reason = match message.as_str() {
+        "Audio PCM queue exceeded one second"
+        | "Encoded audio queue full or disconnected"
+        | "AAC output exceeded bounded drain" => message.as_str(),
+        _ => "Windows audio operation failed",
+    };
+    format!("{stage}: {reason} (0x{:08X})", error.code().0 as u32)
 }
 
 #[derive(Default)]
@@ -198,6 +210,11 @@ impl Drop for AudioDiagnostics {
             }
         }
     }
+}
+
+enum PollResult {
+    Ready(bool),
+    Resync,
 }
 
 struct Source {
@@ -289,7 +306,7 @@ impl Source {
         origin: Instant,
         origin_hns: i128,
         stop: &AtomicBool,
-    ) -> windows::core::Result<bool> {
+    ) -> windows::core::Result<PollResult> {
         let mut drained_frames = 0u64;
         let capture = &self.capture;
         let pending = &mut self.pending;
@@ -354,10 +371,9 @@ impl Source {
             }
             capture.ReleaseBuffer(frames)?;
             if overflow {
-                return Err(windows::core::Error::new(
-                    windows::core::HRESULT(0x80004005u32 as i32),
-                    "Audio PCM queue exceeded one second",
-                ));
+                // The WASAPI buffer has been released. Let the mixer discard
+                // stale PCM from both sources without stopping either endpoint.
+                return Ok(PollResult::Resync);
             }
         }
         let backlogged = capture.GetNextPacketSize()? > 0;
@@ -379,7 +395,7 @@ impl Source {
             diagnostics.idle_fill_frames += fill as u64;
         }
 
-        Ok(backlogged && drained_frames > 0)
+        Ok(PollResult::Ready(backlogged && drained_frames > 0))
     }
 }
 
@@ -419,6 +435,8 @@ unsafe fn capture(
     let mut frames_written = first_frame;
     let mut previous_poll = Instant::now();
     let mut envelope = [0.0_f32; 2];
+    let mut discontinuity = false;
+    let mut last_resync_log: Option<Instant> = None;
     if preferences.output_device.as_deref() == Some(crate::audio_preferences::EXCLUDE_SELF)
         && system_enabled
     {
@@ -429,12 +447,64 @@ unsafe fn capture(
     while !stop.load(Ordering::Acquire) {
         let now = Instant::now();
         let mut backlogged = false;
+        let mut resync = false;
         for source in &mut sources {
             source.diagnostics.max_poll_ms = source
                 .diagnostics
                 .max_poll_ms
                 .max(now.duration_since(previous_poll).as_millis());
-            backlogged |= source.poll(origin, origin_hns, stop)?;
+            let polled = source.poll(origin, origin_hns, stop).inspect_err(|error| {
+                let stage = if source.meter_index == 0 {
+                    "System audio polling"
+                } else {
+                    "Microphone polling"
+                };
+                // Log before returning: the outer wrapper deliberately uses English text.
+                if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+                    let _ = log.write(&audio_failure(stage, error));
+                }
+            })?;
+            match polled {
+                PollResult::Ready(pending) => backlogged |= pending,
+                PollResult::Resync => {
+                    resync = true;
+                    break;
+                }
+            }
+        }
+        if resync {
+            let elapsed_frames = (origin.elapsed().as_nanos() * 48_000 / 1_000_000_000) as i64;
+            // Preserve the shared A/V origin and monotonic encoded timestamps.
+            // Skip the overloaded interval; never compress it or grow a queue.
+            let anchor = frames_written.max(elapsed_frames);
+            for source in &mut sources {
+                source.diagnostics.event(
+                    origin,
+                    "pcm_queue_resync",
+                    (anchor - frames_written) as u64,
+                );
+                crate::audio_timeline::resync_pcm_queue(
+                    &mut source.pending,
+                    &mut source.packet_clock,
+                    &mut source.frames_written,
+                    anchor,
+                );
+            }
+            frames_written = anchor;
+            discontinuity = true;
+            envelope = [0.0; 2];
+            for level in levels {
+                level.store(0, Ordering::Relaxed);
+            }
+            if last_resync_log.is_none_or(|last| last.elapsed() >= Duration::from_secs(5)) {
+                if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+                    let _ = log.write("Audio PCM backlog exceeded the bounded queue; discarded stale PCM and realigned system audio and microphone to the session clock");
+                }
+                last_resync_log = Some(Instant::now());
+            }
+            previous_poll = Instant::now();
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
         }
         let elapsed = now.duration_since(previous_poll).as_secs_f32();
         previous_poll = now;
@@ -456,13 +526,24 @@ unsafe fn capture(
                 }));
                 mixed[index..index + 2].copy_from_slice(&sample.to_le_bytes());
             }
-            encoder.input(&mixed, frames_written * 10_000_000 / 48_000)?;
+            encoder
+                .input(&mixed, frames_written * 10_000_000 / 48_000, discontinuity)
+                .inspect_err(|error| {
+                    if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+                        let _ = log.write(&audio_failure("AAC input", error));
+                    }
+                })?;
+            discontinuity = false;
             for source in &mut sources {
                 source.pending.drain(..4096);
                 source.frames_written += 1024;
             }
             frames_written += 1024;
-            encoder.output(sender)?;
+            encoder.output(sender).inspect_err(|error| {
+                if let Ok((mut log, _)) = crate::diagnostics::Logger::open() {
+                    let _ = log.write(&audio_failure("AAC output", error));
+                }
+            })?;
         }
         for index in 0..2 {
             envelope[index] =
@@ -512,7 +593,12 @@ impl Encoder {
         transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
         Ok(Self { transform })
     }
-    unsafe fn input(&self, pcm: &[u8], time: i64) -> windows::core::Result<()> {
+    unsafe fn input(
+        &self,
+        pcm: &[u8],
+        time: i64,
+        discontinuity: bool,
+    ) -> windows::core::Result<()> {
         let buffer = MFCreateMemoryBuffer(pcm.len() as u32)?;
         let mut ptr = std::ptr::null_mut();
         buffer.Lock(&mut ptr, None, None)?;
@@ -522,6 +608,9 @@ impl Encoder {
         let sample = MFCreateSample()?;
         sample.AddBuffer(&buffer)?;
         sample.SetSampleTime(time)?;
+        if discontinuity {
+            sample.SetUINT32(&MFSampleExtension_Discontinuity, 1)?;
+        }
         sample.SetSampleDuration(1024 * 10_000_000 / 48_000)?;
         self.transform.ProcessInput(0, &sample, 0)
     }
@@ -573,5 +662,25 @@ impl Encoder {
             windows::core::HRESULT(0x80004005u32 as i32),
             "AAC output exceeded bounded drain",
         ))
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn internal_queue_reason_is_preserved_and_windows_text_is_not_localized() {
+        let code = windows::core::HRESULT(0x80004005u32 as i32);
+        let queue = windows::core::Error::new(code, "Audio PCM queue exceeded one second");
+        assert_eq!(
+            audio_failure("Microphone polling", &queue),
+            "Microphone polling: Audio PCM queue exceeded one second (0x80004005)"
+        );
+        let native = windows::core::Error::new(code, "localized driver text");
+        assert_eq!(
+            audio_failure("System audio polling", &native),
+            "System audio polling: Windows audio operation failed (0x80004005)"
+        );
     }
 }
