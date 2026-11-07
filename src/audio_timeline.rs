@@ -31,6 +31,19 @@ impl PacketClock {
         qpc_frame
     }
 }
+/// Drop stale PCM consistently across sources after a bounded queue overrun.
+/// The caller supplies one shared session-frame anchor for all sources.
+pub fn resync_pcm_queue(
+    pending: &mut Vec<u8>,
+    clock: &mut PacketClock,
+    frames_written: &mut i64,
+    anchor: i64,
+) {
+    pending.clear();
+    *clock = PacketClock::default();
+    *frames_written = anchor;
+}
+
 /// Synthesize idle-render silence only after a real quiet interval, never
 /// while captured packets are still waiting to be consumed.
 pub fn should_fill_silence(backlogged: bool, since_packet_ms: u128) -> bool {
@@ -46,6 +59,28 @@ pub fn mix_pcm16(samples: impl Iterator<Item = i16>) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn backlog_resync_aligns_both_sources_without_replaying_stale_pcm() {
+        let mut output = (vec![1u8; 192_000], PacketClock::default(), 48_000);
+        let mut microphone = (vec![2u8; 96_000], PacketClock::default(), 48_000);
+        output.1.target(9000, 48_000, true, 0);
+        microphone.1.target(7000, 48_000, true, 0);
+        let anchor = 192_000;
+        for (pending, clock, written) in [&mut output, &mut microphone] {
+            resync_pcm_queue(pending, clock, written, anchor);
+            assert!(pending.is_empty());
+            assert_eq!(*written, anchor);
+            assert_eq!(clock.target(0, anchor, true, *written), anchor);
+            assert_eq!(
+                clock.target(480, anchor + 480, true, *written),
+                anchor + 480
+            );
+        }
+        assert_eq!(output.2, microphone.2);
+        assert!(output.0.capacity() <= 192_000);
+        assert!(microphone.0.capacity() <= 192_000);
+    }
+
     #[test]
     fn aligned_mix_preserves_single_source_and_clips_without_wrapping() {
         assert_eq!(mix_pcm16([1234].into_iter()), 1234);
